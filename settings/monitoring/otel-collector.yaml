@@ -1,0 +1,96 @@
+# ================================================================ otel-collector (основной)
+# Единая точка сбора observability-данных: всё проходит через него и уходит в Victoria*.
+#   OTLP gRPC :4317, OTLP HTTP :4318       метрики, логи, трейсы
+#   Prometheus remote write :9090          push в формате Prometheus (Remote Write 2.0)
+#   scrape                                 pull в формате Prometheus: экспортеры и компоненты стека
+# Метрики node-exporter приходят по OTLP от otel-agent (сеть хоста VM, см. otel-agent.yaml).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  prometheus_remote_write:
+    endpoint: 0.0.0.0:9090
+
+  prometheus:
+    config:
+      global:
+        scrape_interval: 30s
+      scrape_configs:
+        # squid-exporter работает в сетевом пространстве egress
+        - job_name: squid
+          static_configs:
+            - targets: ["egress:9301"]
+        - job_name: cadvisor
+          static_configs:
+            - targets: ["cadvisor:8080"]
+        - job_name: otel-collector
+          static_configs:
+            - targets: ["127.0.0.1:8888"]
+        - job_name: victoria-metrics
+          static_configs:
+            - targets: ["victoria-metrics:8428"]
+        - job_name: victoria-logs
+          static_configs:
+            - targets: ["victoria-logs:9428"]
+        - job_name: victoria-traces
+          static_configs:
+            - targets: ["victoria-traces:10428"]
+        - job_name: vmauth
+          static_configs:
+            - targets: ["vmauth:8427"]
+        - job_name: grafana
+          static_configs:
+            - targets: ["grafana:3000"]
+
+processors:
+  # OTLP переносит job/instance из Prometheus в service.name/service.instance.id;
+  # вернуть привычные метки для запросов и готовых дашбордов (Node Exporter Full и др.)
+  resource/prometheus-labels:
+    attributes:
+      - key: job
+        from_attribute: service.name
+        action: insert
+      - key: instance
+        from_attribute: service.instance.id
+        action: insert
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  batch: {}
+
+exporters:
+  otlp_http/victoria-metrics:
+    metrics_endpoint: http://victoria-metrics:8428/opentelemetry/v1/metrics
+  otlp_http/victoria-logs:
+    logs_endpoint: http://victoria-logs:9428/insert/opentelemetry/v1/logs
+  otlp_http/victoria-traces:
+    traces_endpoint: http://victoria-traces:10428/insert/opentelemetry/v1/traces
+
+service:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 8888
+  pipelines:
+    metrics:
+      receivers: [otlp, prometheus_remote_write, prometheus]
+      processors: [memory_limiter, resource/prometheus-labels, batch]
+      exporters: [otlp_http/victoria-metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/victoria-logs]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/victoria-traces]

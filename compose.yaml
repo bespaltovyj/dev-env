@@ -7,6 +7,10 @@
 #   docker compose exec agent tmux new -A -s main # подключиться (повторный вызов — к той же сессии)
 #   docker compose down      | podman compose down
 #
+# Мониторинг (профиль monitoring): otel-collector, VictoriaMetrics/Logs/Traces, vmauth (один VMUI),
+# Grafana, squid-exporter, node-exporter, cAdvisor. Без профиля эти сервисы не запускаются:
+#   podman compose --profile monitoring up -d     | COMPOSE_PROFILES=monitoring в .env
+#
 # .env используется дважды:
 #   1. compose подставляет из него ${...} в этот файл (AGENT_IMAGE, AGENT_MEMORY, ...);
 #   2. env_file передаёт все его переменные внутрь контейнера.
@@ -35,8 +39,9 @@ services:
       HTTPS_PROXY: http://egress:3128
       http_proxy: http://egress:3128
       https_proxy: http://egress:3128
-      NO_PROXY: localhost,127.0.0.1,::1
-      no_proxy: localhost,127.0.0.1,::1
+      # otel-collector (профиль monitoring) — в той же сети agent-internal, без прокси
+      NO_PROXY: localhost,127.0.0.1,::1,otel-collector
+      no_proxy: localhost,127.0.0.1,::1,otel-collector
       # fetch в Node.js без этого прокси не использует
       NODE_USE_ENV_PROXY: "1"
       # Весь конфиг Claude Code, включая .claude.json, — в смонтированной папке data/claude
@@ -99,6 +104,9 @@ services:
     networks:
       - agent-internal
       - outside
+    # squid-exporter работает в сетевом пространстве egress, поэтому его порт публикуется здесь
+    ports:
+      - "127.0.0.1:9301:9301"
     # Файлами, а не папкой: в /etc/squid остаются mime.conf и conf.d из пакета
     volumes:
       - ./settings/egress/squid.conf:/etc/squid/squid.conf:ro
@@ -110,12 +118,201 @@ services:
     mem_limit: 256m
     pids_limit: 256
 
+  # ============================================================== мониторинг (профиль monitoring)
+  # Все данные идут через otel-collector, хранятся в Victoria*, данные на Windows — data/monitoring.
+  # Все порты только на 127.0.0.1.
+
+  # Приём: OTLP (4317 gRPC, 4318 HTTP), Prometheus remote write (9090), scrape экспортеров и стека.
+  # В agent-internal: приложения в agent шлют телеметрию на otel-collector:4318 напрямую
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.164.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./settings/monitoring/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - monitoring
+      - agent-internal
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:8888:8888"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 512m
+
+  # Сеть хоста VM: забирает метрики node-exporter и отдаёт их в otel-collector (127.0.0.1:4318)
+  otel-agent:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.164.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./settings/monitoring/otel-agent.yaml:/etc/otelcol/config.yaml:ro
+    network_mode: host
+    depends_on:
+      - otel-collector
+      - node-exporter
+    mem_limit: 128m
+
+  # Метрики самой VM (Fedora CoreOS): сеть и PID хоста, корень VM только для чтения.
+  # Порт 9100 слушает в сети VM (127.0.0.1) — на Windows не пробрасывается, читает otel-agent
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    mem_limit: 128m
+
+  # Метрики контейнеров (CPU, память, сеть, диск) по cgroups. Podman rootless: корень cgroup недоступен,
+  # поэтому вместо него — поддерево пользователя VM core (uid 1000), где живут все его контейнеры;
+  # SELinux запрещает inotify на cgroups из контейнера — метка отключена только здесь.
+  # Сокет podman нужен для имён контейнеров: он даёт полный доступ к podman пользователя core,
+  # поэтому у cAdvisor только внутренняя сеть monitoring
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --podman=unix:///var/run/podman/podman.sock
+      - --docker_only=false
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+    security_opt:
+      - label=disable
+    volumes:
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+      - /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service:/sys/fs/cgroup:ro
+      - /dev/disk:/dev/disk:ro
+      - /run/user/1000/podman/podman.sock:/var/run/podman/podman.sock:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 256m
+
+  # Счётчики squid из cache manager; в сетевом пространстве egress (доступ manager только с localhost)
+  squid-exporter:
+    image: docker.io/boynux/squid-exporter:v1.13.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      SQUID_HOSTNAME: localhost
+      SQUID_PORT: "3128"
+      SQUID_EXPORTER_LISTEN: ":9301"
+    network_mode: service:egress
+    depends_on:
+      - egress
+    mem_limit: 64m
+
+  victoria-metrics:
+    image: docker.io/victoriametrics/victoria-metrics:v1.155.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${METRICS_RETENTION:-30d}
+    volumes:
+      - ./data/monitoring/victoria-metrics:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8428:8428"
+    mem_limit: 1g
+
+  victoria-logs:
+    image: docker.io/victoriametrics/victoria-logs:v1.53.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${LOGS_RETENTION:-14d}
+    volumes:
+      - ./data/monitoring/victoria-logs:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:9428:9428"
+    mem_limit: 512m
+
+  victoria-traces:
+    image: docker.io/victoriametrics/victoria-traces:v0.12.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${TRACES_RETENTION:-7d}
+    volumes:
+      - ./data/monitoring/victoria-traces:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:10428:10428"
+    mem_limit: 512m
+
+  # Один вход во все VMUI: /vmui/, /logs/select/vmui/, /traces/select/vmui/ (settings/monitoring/vmauth.yaml)
+  vmauth:
+    image: docker.io/victoriametrics/vmauth:v1.155.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["-auth.config=/etc/vmauth/config.yaml"]
+    volumes:
+      - ./settings/monitoring/vmauth.yaml:/etc/vmauth/config.yaml:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8427:8427"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 64m
+
+  # Образ собирают scripts/build (images/monitoring/grafana.Dockerfile): плагин VictoriaLogs ставится
+  # при сборке, в работе выхода в интернет нет. БД не нужна: пользователи и дашборды — во встроенной
+  # SQLite (data/monitoring/grafana), источники данных — settings/monitoring/grafana/provisioning.
+  # root: папки с Windows принадлежат пользователю VM, а он в rootless-контейнере — root
+  grafana:
+    image: ${GRAFANA_IMAGE:-localhost/agent-box-grafana:latest}
+    pull_policy: never
+    profiles: [monitoring]
+    restart: unless-stopped
+    user: "0"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Без обращений в интернет: статистика, проверка обновлений, новости
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./data/monitoring/grafana:/var/lib/grafana
+      - ./settings/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 512m
+
 networks:
   # Без маршрута наружу и внешнего DNS
   agent-internal:
     internal: true
   # Обычная сеть с выходом в интернет — только у egress
   outside: {}
+  # Стек мониторинга, без выхода в интернет (порты на 127.0.0.1 публикуются и во внутреннюю сеть)
+  monitoring:
+    internal: true
 
 # Имена в podman: agent-box_agent-home, agent-box_orcad-artifacts
 volumes:

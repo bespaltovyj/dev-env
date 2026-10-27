@@ -1,0 +1,25 @@
+# Источники данных Grafana: создаются при старте, правятся здесь, а не в UI
+apiVersion: 1
+
+datasources:
+  # VictoriaMetrics совместима с Prometheus API
+  - name: VictoriaMetrics
+    uid: victoria-metrics
+    type: prometheus
+    access: proxy
+    url: http://victoria-metrics:8428
+    isDefault: true
+
+  # Плагин victoriametrics-logs-datasource (GF_PLUGINS_PREINSTALL_SYNC в compose.yaml)
+  - name: VictoriaLogs
+    uid: victoria-logs
+    type: victoriametrics-logs-datasource
+    access: proxy
+    url: http://victoria-logs:9428
+
+  # VictoriaTraces отдаёт Jaeger Query API
+  - name: VictoriaTraces
+    uid: victoria-traces
+    type: jaeger
+    access: proxy
+    url: http://victoria-traces:10428/select/jaeger

@@ -13,17 +13,20 @@ compose.yaml, .env.example          запуск (п. 6)
 settings/                           только статические настройки, безопасные для git
 ├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
 ├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
-└── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
 data/                               не в git: изменяемые данные контейнера (п. 6)
 ├── claude/                         ~/.claude: логин, сессии, история, settings.json Claude Code
 ├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
 ├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
-└── bash/                           история bash (HISTFILE)
+├── bash/                           история bash (HISTFILE)
+└── monitoring/                     данные VictoriaMetrics, VictoriaLogs, VictoriaTraces, Grafana (п. 10)
 images/
 ├── Dockerfile                      итоговый образ localhost/agent-box
 ├── common/downloader.Dockerfile    базовый образ для скачивания компонентов
 ├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
-└── egress/                         образ прокси (squid без конфига)
+├── egress/                         образ прокси (squid без конфига)
+└── monitoring/grafana.Dockerfile   Grafana с плагином VictoriaLogs (п. 10)
 scripts/build/
 ├── build.ps1, build.sh             сборка всех образов (п. 5)
 └── entrypoint.sh                   точка входа контейнера agent
@@ -389,8 +392,78 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
 в корне каждого репозитория и выполняется при создании worktree — там место установке зависимостей проекта
 (`npm install`, `uv sync`), а не настройке агента.
 
-## Проблемы
+## 10. Мониторинг: профиль monitoring
 
+Сервисы мониторинга описаны в `compose.yaml` с `profiles: [monitoring]` и без профиля не запускаются.
+От имени администратора:
+
+```bat
+podman compose -f A:\orca\docker\compose.yaml --profile monitoring up -d
+podman compose -f A:\orca\docker\compose.yaml --profile monitoring down
+```
+
+Чтобы не писать `--profile` каждый раз — `COMPOSE_PROFILES=monitoring` в `.env`.
+Образ Grafana собирает `scripts\build\build.ps1` (`localhost/agent-box-grafana`), остальные образы скачиваются.
+
+```
+ exporters / приложения                     otel-collector                         хранилища
+ squid-exporter (egress:9301) ─ scrape ─►┐                              ┌─► VictoriaMetrics :8428  ─┐
+ cAdvisor :8080 ──────────────── scrape ─►│  receivers:                  │                            │
+ Victoria*, vmauth, Grafana ──── scrape ─►│   prometheus (scrape)        ├─► VictoriaLogs    :9428  ─┼─► vmauth :8427 (VMUI)
+ node-exporter ◄─ otel-agent ─── OTLP ──►│   otlp :4317/:4318           │                            │   Grafana :3000
+ (сеть VM)        (сеть VM)              │   prometheus_remote_write    └─► VictoriaTraces  :10428 ─┘
+ приложения в agent ───────────── OTLP ──►│     :9090
+```
+
+| Сервис | Порт на 127.0.0.1 | Что делает |
+|---|---|---|
+| `otel-collector` | 4317, 4318, 9090, 8888 | единая точка сбора: OTLP (метрики, логи, трейсы), Prometheus remote write 2.0 (push), scrape экспортеров (pull); свои метрики — 8888 |
+| `otel-agent` | — (сеть VM) | забирает метрики node-exporter и передаёт в otel-collector по OTLP |
+| `node-exporter` | — (сеть VM, 127.0.0.1:9100 внутри VM) | метрики самой VM: CPU, память, диски, сеть |
+| `cadvisor` | 8080 | метрики контейнеров по cgroups, с именами из podman |
+| `squid-exporter` | 9301 (порт egress) | счётчики squid из cache manager: запросы, трафик, время ответа, соединения, память |
+| `victoria-metrics` | 8428 | метрики, VMUI `/vmui/` |
+| `victoria-logs` | 9428 | логи, VMUI `/select/vmui/` |
+| `victoria-traces` | 10428 | трейсы, VMUI `/select/vmui/`, Jaeger API `/select/jaeger` |
+| `vmauth` | 8427 | один вход во все VMUI (ниже) |
+| `grafana` | 3000 | дашборды; логин `admin`/`admin` или `GRAFANA_ADMIN_*` в `.env` |
+
+**Один VMUI.** У каждого компонента Victoria свой встроенный VMUI, vmauth собирает их на одном порту:
+<http://127.0.0.1:8427/vmui/> — метрики, <http://127.0.0.1:8427/logs/select/vmui/> — логи,
+<http://127.0.0.1:8427/traces/select/vmui/> — трейсы (`settings/monitoring/vmauth.yaml`).
+
+**Grafana.** Источники данных создаются из `settings/monitoring/grafana/provisioning`: VictoriaMetrics
+(тип Prometheus), VictoriaLogs (плагин `victoriametrics-logs-datasource`), VictoriaTraces (тип Jaeger).
+БД не нужна: пользователи и дашборды — во встроенной SQLite в `data/monitoring/grafana`. Готовые дашборды
+импортируются по ID (например, Node Exporter Full — `1860`); метки `job`/`instance` коллектор
+восстанавливает из OTLP-атрибутов, поэтому такие дашборды работают.
+
+**Без интернета.** Сеть `monitoring` — `internal: true`: ни Grafana, ни хранилища не выходят наружу. Плагин
+VictoriaLogs ставится при сборке образа (`images/monitoring/grafana.Dockerfile`, версия `VICTORIALOGS_PLUGIN_VERSION`),
+проверки обновлений и статистика Grafana выключены. node-exporter и otel-agent работают в сети VM, но наружу не ходят.
+
+**Prometheus-формат.** Принимается двумя способами: scrape (добавить job в `settings/monitoring/otel-collector.yaml`)
+и push через remote write на `http://127.0.0.1:9090` (из agent — `http://otel-collector:9090`). Приёмник
+поддерживает только Remote Write 2.0: в Prometheus — `protobuf_message: io.prometheus.write.v2.Request` в `remote_write`.
+
+**Отправка из agent.** otel-collector подключён к сети `agent-internal`: приложения в контейнере agent шлют OTLP на
+`http://otel-collector:4318` без прокси (`otel-collector` в `NO_PROXY`).
+
+**Особенности rootless podman:**
+- bridge-сети не видят сеть самой VM, поэтому node-exporter (ему нужна сеть VM) читает otel-agent в той же сети и
+  отправляет в опубликованный порт коллектора `127.0.0.1:4318`;
+- cAdvisor не может следить за корнем cgroup: ему монтируется поддерево пользователя `core`
+  (`/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service`), где живут все контейнеры, SELinux-метка
+  отключена только для него, сокет podman — для имён контейнеров (даёт доступ к podman, поэтому cAdvisor только
+  во внутренней сети);
+- squid-exporter работает в сетевом пространстве egress: cache manager доступен только с localhost
+  (`http_access allow localhost manager` в `settings/egress/squid.conf`), порт 9301 публикуется у egress.
+
+Данные `data/monitoring` лежат на Windows (9p): VictoriaMetrics/Logs/Traces и SQLite Grafana на 9p медленнее
+и менее надёжны, чем на диске VM. Срок хранения — `METRICS_RETENTION` (30d), `LOGS_RETENTION` (14d),
+`TRACES_RETENTION` (7d) в `.env`.
+
+## Проблемы
 ### `machine is not listening on ssh port`, а `machine list` показывает `Currently running`
 
 На хосте не работает gvproxy (проброс SSH-порта и сети в VM), в VM падает `vsock-network.service`.

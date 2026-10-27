@@ -12,6 +12,7 @@ param(
     [string]   $Prefix    = 'localhost/agent-box',
     [string]   $Image     = 'localhost/agent-box:latest',
     [string]   $EgressImage = 'localhost/agent-box-egress:latest',
+    [string]   $GrafanaImage = 'localhost/agent-box-grafana:latest',
     [int]      $Jobs      = 4,
     [string]   $LogDir    = '.build-logs',
     [string[]] $BuildArgs = @()
@@ -116,4 +117,10 @@ $argv = @('build') + $CommonArgs + @('-t', $EgressImage, '-f', 'images/egress/Do
 $code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'egress.log')
 if ($code -ne 0) { Show-Failure 'egress'; exit 1 }
 
-Write-Host "== готово: $Image, $EgressImage"
+# Grafana для профиля monitoring: плагин VictoriaLogs ставится при сборке
+Write-Host "== $GrafanaImage"
+$argv = @('build') + $CommonArgs + @('-t', $GrafanaImage, '-f', 'images/monitoring/grafana.Dockerfile', 'images/monitoring')
+$code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'grafana.log')
+if ($code -ne 0) { Show-Failure 'grafana'; exit 1 }
+
+Write-Host "== готово: $Image, $EgressImage, $GrafanaImage"

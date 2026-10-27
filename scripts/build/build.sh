@@ -8,7 +8,8 @@
 # Пути (images/, .build-logs) считаются от корня репозитория, текущая папка не важна.
 #
 # Переменные: ENGINE (podman), PREFIX (localhost/agent-box), IMAGE (localhost/agent-box:latest),
-#             EGRESS_IMAGE (localhost/agent-box-egress:latest), JOBS (4 параллельные сборки), LOG_DIR (.build-logs)
+#             EGRESS_IMAGE (localhost/agent-box-egress:latest), GRAFANA_IMAGE (localhost/agent-box-grafana:latest),
+#             JOBS (4 параллельные сборки), LOG_DIR (.build-logs)
 # Требуется переменная окружения AGENT_ROOT.
 set -euo pipefail
 
@@ -21,6 +22,7 @@ ENGINE="${ENGINE:-podman}"
 PREFIX="${PREFIX:-localhost/agent-box}"
 IMAGE="${IMAGE:-localhost/agent-box:latest}"
 EGRESS_IMAGE="${EGRESS_IMAGE:-localhost/agent-box-egress:latest}"
+GRAFANA_IMAGE="${GRAFANA_IMAGE:-localhost/agent-box-grafana:latest}"
 JOBS="${JOBS:-4}"
 LOG_DIR="${LOG_DIR:-.build-logs}"
 EXTRA_ARGS=("$@")
@@ -103,4 +105,9 @@ echo "== $EGRESS_IMAGE"
 "$ENGINE" build "${COMMON_ARGS[@]}" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
   >"$LOG_DIR/egress.log" 2>&1 || { tail -n 20 "$LOG_DIR/egress.log" >&2; exit 1; }
 
-echo "== готово: $IMAGE, $EGRESS_IMAGE"
+# Grafana для профиля monitoring: плагин VictoriaLogs ставится при сборке
+echo "== $GRAFANA_IMAGE"
+"$ENGINE" build "${COMMON_ARGS[@]}" -t "$GRAFANA_IMAGE" -f images/monitoring/grafana.Dockerfile images/monitoring \
+  >"$LOG_DIR/grafana.log" 2>&1 || { tail -n 20 "$LOG_DIR/grafana.log" >&2; exit 1; }
+
+echo "== готово: $IMAGE, $EGRESS_IMAGE, $GRAFANA_IMAGE"

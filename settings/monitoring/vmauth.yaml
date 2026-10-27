@@ -1,0 +1,18 @@
+# ================================================================ vmauth: одна точка входа во все VMUI
+#   http://127.0.0.1:8427/vmui/                  метрики (VictoriaMetrics)
+#   http://127.0.0.1:8427/logs/select/vmui/      логи (VictoriaLogs)
+#   http://127.0.0.1:8427/traces/select/vmui/    трейсы (VictoriaTraces)
+# VMUI логов и трейсов берёт адрес API из своего URL без /select/vmui/..., поэтому запросы
+# идут на /logs/... и /traces/..., а vmauth снимает префикс и отправляет их в нужный компонент.
+# Последнее правило — явное /.*: default_url отправил бы любой путь на корень VictoriaMetrics.
+
+unauthorized_user:
+  url_map:
+    - src_paths: ["/logs/.*"]
+      url_prefix: http://victoria-logs:9428
+      drop_src_path_prefix_parts: 1
+    - src_paths: ["/traces/.*"]
+      url_prefix: http://victoria-traces:10428
+      drop_src_path_prefix_parts: 1
+    - src_paths: ["/.*"]
+      url_prefix: http://victoria-metrics:8428
