@@ -1,0 +1,5 @@
+# Скрипты и Dockerfile выполняются в Linux: только LF, независимо от core.autocrlf
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.Dockerfile  text eol=lf
+egress/*      text eol=lf

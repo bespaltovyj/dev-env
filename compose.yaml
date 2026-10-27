@@ -1,0 +1,90 @@
+# ================================================================ agent-box
+# Запуск agent-box. Формат Compose Specification: работает с `docker compose` и `podman compose`.
+# Образ собирается заранее скриптом build.ps1 / build.sh.
+#
+#   cp .env.example .env                          # заполнить переменные
+#   docker compose up -d     | podman compose up -d
+#   docker compose exec agent tmux new -A -s main # подключиться (повторный вызов — к той же сессии)
+#   docker compose down      | podman compose down
+#
+# .env используется дважды:
+#   1. compose подставляет из него ${...} в этот файл (AGENT_IMAGE, AGENT_MEMORY, ...);
+#   2. env_file передаёт все его переменные внутрь контейнера.
+
+name: agent-box
+
+services:
+  agent:
+    image: ${AGENT_IMAGE:-localhost/agent-box:latest}
+    pull_policy: never
+    hostname: agent-box
+    stdin_open: true
+    tty: true
+    # Контейнер живёт постоянно, работа идёт через `exec` и tmux-сессии
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+    # ============================================================ переменные окружения
+    env_file:
+      - path: .env
+        required: false
+    # Выход в интернет только через egress (environment важнее .env).
+    # Maven/Gradle: entrypoint.sh пишет прокси в ~/.m2 и ~/.gradle из HTTPS_PROXY
+    environment:
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      NO_PROXY: localhost,127.0.0.1,::1
+      no_proxy: localhost,127.0.0.1,::1
+      # fetch в Node.js без этого прокси не использует
+      NODE_USE_ENV_PROXY: "1"
+
+    # ============================================================ сеть
+    # agent-internal без выхода наружу и внешнего DNS: интернет только через egress.
+    # orca-ide serve (entrypoint.sh): только localhost, Orca на Windows подключается к 127.0.0.1.
+    # Не 6768: его на Windows занимает рантайм десктопного Orca
+    networks:
+      - agent-internal
+    ports:
+      - "127.0.0.1:${ORCA_PORT:-6769}:${ORCA_PORT:-6769}"
+    depends_on:
+      - egress
+
+    # ============================================================ данные на хосте
+    #volumes:
+    #  - ${WORKSPACES_DIR:-./data/workspaces}:/workspaces
+    #  - ${AGENT_HOME_DIR:-./data/home}:/home/agent
+
+    # ============================================================ ограничения
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${AGENT_MEMORY:-4g}
+    cpus: ${AGENT_CPUS:-2}
+    pids_limit: ${AGENT_PIDS:-1024}
+
+  # ============================================================== egress
+  # squid: пропускает в интернет только домены из egress/allowlist.txt (встроен в образ).
+  # Лог запросов: podman logs agent-box-egress-1
+  egress:
+    image: ${EGRESS_IMAGE:-localhost/agent-box-egress:latest}
+    pull_policy: never
+    restart: unless-stopped
+    networks:
+      - agent-internal
+      - outside
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 256
+
+networks:
+  # Без маршрута наружу и внешнего DNS
+  agent-internal:
+    internal: true
+  # Обычная сеть с выходом в интернет — только у egress
+  outside: {}
