@@ -6,6 +6,29 @@
 - Установленный Podman (CLI), при желании Podman Desktop
 - Для работы с Orca — десктопный Orca на Windows
 
+## Структура репозитория
+
+```
+compose.yaml, .env.example          запуск (п. 6)
+settings/                           только статические настройки, безопасные для git
+├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
+├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
+└── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+data/                               не в git: изменяемые данные контейнера (п. 6)
+├── claude/                         ~/.claude: логин, сессии, история, settings.json Claude Code
+├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
+├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
+└── bash/                           история bash (HISTFILE)
+images/
+├── Dockerfile                      итоговый образ localhost/agent-box
+├── common/downloader.Dockerfile    базовый образ для скачивания компонентов
+├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
+└── egress/                         образ прокси (squid без конфига)
+scripts/build/
+├── build.ps1, build.sh             сборка всех образов (п. 5)
+└── entrypoint.sh                   точка входа контейнера agent
+```
+
 ## Архитектура
 
 ```
@@ -16,7 +39,7 @@
 │ │ hvsock 0000DD87-… — сеть VM                             │ │          │ /mnt/a/orca/docker  ◄─ 9p ◄─ A:\podman (хост)                │
 │ │                                                         │ │          │                                                              │
 │ │ 1. sudo podman machine start                            │ │          │                                                              │
-│ │ 2. .\build.ps1 или ./build.sh                           │ │          │ ┌─ контейнер agent-box-agent-1 ────────────────────────────┐ │
+│ │ 2. .\scripts\build\build.ps1 или build.sh               │ │          │ ┌─ контейнер agent-box-agent-1 ────────────────────────────┐ │
 │ │ 3. podman compose -f compose.yaml up -d --force-recreate│ │          │ │ cap_drop ALL · no-new-privileges                         │ │
 │ │                                                         │ │          │ │ сеть agent-internal: нет выхода наружу и DNS             │ │
 │ │ сокет %TEMP%\podman\                                    │ │          │ │ PID 1  tini                                              │ │
@@ -32,11 +55,11 @@
 │ │ десктоп, окно  │ │ build/run/exec: │                      │          │ │ ┌─ tmux-сессия «main» ─────────────────────────────────┐ │ │
 │ │ свой рантайм   │ │   пользователь  │                      │          │ │ │ bash · claude · java · mvn · gradle · go · python    │ │ │
 │ │ :6768 (занят)  │ │ machine/compose:│                      │          │ │ └──────────────────────────────────────────────────────┘ │ │
-│ └────────────────┘ │   администратор │                      │          │ │ /home/agent, /workspaces — в контейнере (volumes выкл.)  │ │
+│ └────────────────┘ │   администратор │                      │          │ │ /repos ◄─ data/repos · ~/.claude ◄─ data/claude          │ │
 │                    └─────────────────┘                      │          │ └─────┬────────────────────────────────────────────────────┘ │
 │                                                             │          │       │ HTTP(S)_PROXY → egress:3128                          │          ┌── internet ────────┐
 │                                                             │          │ ┌─────▼─ контейнер agent-box-egress-1 ─────────────────────┐ │          │                    │
-│                                                             │          │ │ squid :3128 · только домены из egress/allowlist.txt      │ │          │ github, npm, pypi  │
+│                                                             │          │ │ squid :3128 · домены из settings/egress/allowlist.txt    │ │          │ github, npm, pypi  │
 │                                                             │          │ │ остальное → 403 + лог (podman logs agent-box-egress-1)   │ │          │ anthropic, maven   │
 │                                                             │          │ │ сети agent-internal + outside ───────────────────────────┼─┼─gvproxy──► allowlist only     │
 │                                                             │          │ └──────────────────────────────────────────────────────────┘ │          │                    │
@@ -63,7 +86,7 @@ Remove-LocalGroupMember -SID 'S-1-5-32-578' -Member $env:USERNAME   # от им�
 | От имени администратора | Без прав администратора |
 |---|---|
 | `podman machine init / start / stop / rm / set / list / ssh` | `podman build`, `run`, `exec`, `ps`, `images`, `logs` |
-| `podman compose ...` (запрашивает адрес машины через Hyper-V) | `build.ps1` / `build.sh` |
+| `podman compose ...` (запрашивает адрес машины через Hyper-V) | `scripts\build\build.ps1` / `build.sh` |
 | Podman Desktop (запускать «от имени администратора», автозапуск при входе выключить) | работа в контейнере |
 
 Без повышения `podman compose` падает с `get machine connection URI: could not find a matching machine for connection`.
@@ -87,7 +110,7 @@ Set-ExecutionPolicy -Scope Process RemoteSigned       # только текущ�
 
 `RemoteSigned`: локальные скрипты запускаются, скачанные из интернета (с пометкой `Zone.Identifier`) — только
 с цифровой подписью; снять пометку с доверенного файла — `Unblock-File`. Разово без изменения политики:
-`powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1`.
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build\build.ps1`.
 
 ## 2. Создание Podman-машины
 
@@ -105,11 +128,10 @@ podman machine init agents --provider hyperv --image docker://quay.io/podman/mac
 | `--memory 8192` | 8 ГБ памяти |
 | `--swap 0` | без swap |
 | `--disk-size 60` | диск 60 ГБ |
-| `-v` | единственная папка Windows, видимая машине. Цель обязана быть `/mnt/<диск>/<путь>` той же папки: compose переводит `A:\orca\docker\data` в `/mnt/a/orca/docker/data` |
+| `-v` | единственная папка Windows, видимая машине. Цель обязана быть `/mnt/<диск>/<путь>` той же папки: compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings` |
 
-Монтирование меняется только пересозданием машины (`rm` + `init`), образы при этом удаляются.
-Чтобы VM видела только данные, а не исходники и `.env`, можно смонтировать отдельную папку
-(`-v A:\podman:/mnt/a/podman`) и указать в `.env` `WORKSPACES_DIR=A:\podman\workspaces`, `AGENT_HOME_DIR=A:\podman\home`.
+Монтирование меняется только пересозданием машины (`rm` + `init`), образы и named volume при этом удаляются.
+Нужна именно папка проекта: из неё монтируются `settings/` и `data/`.
 
 Hyper-V не должен запускать VM сам при загрузке Windows: так VM работает без gvproxy и недоступна (см. «Проблемы»).
 
@@ -154,12 +176,12 @@ podman network create nettest; podman run --rm --network nettest docker.io/libra
 Без прав администратора, машина `agents` должна быть запущена (п. 3):
 
 ```powershell
-.\build.ps1                       # или ./build.sh
+.\scripts\build\build.ps1         # или ./scripts/build/build.sh
 Copy-Item .env.example .env       # заполнить переменные
 ```
 
-Из `cmd`: `powershell -NoProfile -ExecutionPolicy Bypass -File A:\orca\docker\build.ps1`.
-Скрипт сам переходит в свою папку и берёт `podman.exe` (файлы без расширения в PATH пропускает).
+Из `cmd`: `powershell -NoProfile -ExecutionPolicy Bypass -File A:\orca\docker\scripts\build\build.ps1`.
+Скрипт сам переходит в корень репозитория и берёт `podman.exe` (файлы без расширения в PATH пропускает).
 Собираются два образа: `localhost/agent-box` и прокси `localhost/agent-box-egress` (п. 8).
 Сборка ходит в интернет напрямую — ограничение п. 8 действует только на запущенный контейнер agent.
 
@@ -179,14 +201,50 @@ podman compose -f A:\orca\docker\compose.yaml down                              
 
 Без прав администратора то же через обычный podman: `podman exec -it agent-box-agent-1 tmux new -A -s main`.
 
-Пока `volumes:` в `compose.yaml` закомментирован, `/home/agent` и `/workspaces` живут только в контейнере:
-пересоздание контейнера стирает их (в том числе логин Claude).
+`~/.claude` контейнера смонтирован из `data/claude` (`CLAUDE_CONFIG_DIR`, туда же попадает `.claude.json`):
+логин, сессии, история и `settings.json` (в него пишут Orca и сам Claude) переживают пересоздание контейнера.
+Поверх него только для чтения монтируется статический `settings/claude/CLAUDE.md` из git: агенты его не изменят.
+Это отдельный конфиг, не `~/.claude` хоста: хуки хоста с путями Windows в Linux не работают, а запись агентов
+в конфиг хоста дала бы им выполнение команд на Windows.
+`userns_mode: keep-id` нужен, чтобы agent мог писать в папки, смонтированные с Windows.
+
+Где хранятся данные контейнера:
+
+| В контейнере | Где | Что |
+|---|---|---|
+| `~/.claude` | `data/claude` на Windows | логин, сессии, история, `settings.json` Claude Code |
+| `~/.claude/CLAUDE.md` | `settings/claude/CLAUDE.md`, только чтение | инструкции агентам (в git) |
+| `/repos` | `data/repos` на Windows | git-репозитории всех агентов (рабочая папка контейнера, `$REPOS_DIR`) |
+| `~/orca/workspaces` | `data/repos/orca-worktrees` на Windows | worktree, которые создаёт Orca (её `workspaceDir` по умолчанию) |
+| `~/.config/orca`, `~/.orca` | `data/orca/config`, `data/orca/home` на Windows | сессии и рабочие пространства Orca, история терминалов, сопряжение, секреты orcad |
+| `~/.local/state/bash` | `data/bash` на Windows | история bash (`HISTFILE`) |
+| `~/.config/orca/orcad-artifacts` | named volume `agent-box_orcad-artifacts` | рантайм orcad (~150 МБ), скачивается с nodejs.org |
+| остальной `/home/agent` | named volume `agent-box_agent-home` | кэши npm, Maven, Gradle, Go, `~/.m2/settings.xml` |
+
+Всё это переживает `up --force-recreate` и `down`. Named volume удаляются `down -v`, `podman volume rm` и
+пересозданием машины; `data/` на Windows — только вручную. Содержимое `/home/agent` из образа копируется в том
+только при первом создании: изменения домашней папки в новом образе в существующий том не попадут.
+
+Агенты клонируют репозитории в `/repos`: так написано в `settings/claude/CLAUDE.md` (инструкции Claude Code,
+правятся без пересборки), `/repos` — рабочая папка контейнера, путь есть в `$REPOS_DIR`. Это правило для агентов,
+а не запрет: клонировать в другое место технически можно, но такие репозитории пропадут при пересоздании контейнера.
+Сам `/repos` — тоже 9p: регистр в именах файлов не различается (как в NTFS), установка зависимостей и сборки
+медленнее, чем на диске VM.
+
+`data/` подключается по 9p (п. 2): SQLite-базы Orca в режиме WAL и её unix-сокеты (`daemon/*.sock`, `o-*.sock`)
+на 9p могут работать ненадёжно. Если `orca serve` не стартует (`tmux attach -t orca`) или базы повреждаются —
+перенести `~/.config/orca` в named volume.
+
+```bat
+podman volume ls                                                  :: тома agent-box_*
+podman volume export agent-box_agent-home -o A:\backup\home.tar   :: резервная копия на Windows
+```
 
 ### Как устроен контейнер
 
 ```
 tini                                  PID 1: передаёт сигналы, убирает зомби-процессы
-└── agent-entrypoint                  entrypoint.sh: запускает tmux-сессию orca, затем exec основной команды
+└── agent-entrypoint                  scripts/build/entrypoint.sh: запускает tmux-сессию orca, затем exec основной команды
     └── sleep infinity                command из compose.yaml: держит контейнер запущенным
 tmux: orca  — orca-ide serve          (п. 7)
 tmux: main  — ваша работа             (через exec)
@@ -215,7 +273,7 @@ tmux запускает login-shell, а `/etc/profile` Debian сбрасывае
 
 CLI Orca в образе называется `orca-ide` (не `orca`). `orca-ide open` в контейнере не работает: это десктопное
 приложение, а дисплея нет (`Timed out waiting for an Orca desktop window`). Вместо него при старте контейнера
-`entrypoint.sh` запускает в tmux-сессии `orca` сервер без окна:
+`scripts/build/entrypoint.sh` запускает в tmux-сессии `orca` сервер без окна:
 
 ```
 orca-ide serve --port 6769 --pairing-address ws://127.0.0.1:6769
@@ -257,11 +315,11 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
 ## 8. Доступ в интернет: allowlist
 
 Контейнер agent ходит в интернет только через прокси `egress` (squid) и только на домены из
-`egress/allowlist.txt`. Всё остальное получает 403 и записывается в лог.
+`settings/egress/allowlist.txt`. Всё остальное получает 403 и записывается в лог.
 
 ```
 ┌─ agent ───────────────────────┐  сеть agent-internal   ┌─ egress (squid :3128) ─────┐  сеть outside
-│ claude, npm, pip, git, mvn …  │  internal: нет выхода  │ egress/allowlist.txt       │ ──────────────► интернет
+│ claude, npm, pip, git, mvn …  │  internal: нет выхода  │ allowlist.txt              │ ──────────────► интернет
 │ HTTPS_PROXY=http://egress:3128│ ─► и внешнего DNS ────►│ остальное → 403 + лог      │ (только из списка)
 └───────────────────────────────┘                        └────────────────────────────┘
         ▲ 127.0.0.1:6769 (Orca) — проброс порта во внутреннюю сеть работает
@@ -273,34 +331,63 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
   Разрешены порты 80 и 443, `CONNECT` — только на 443. `git` — только по https, не по ssh.
 - **Прокси в agent** задаёт `compose.yaml` (`environment`, важнее `.env`): `HTTP(S)_PROXY`, `NO_PROXY`,
   `NODE_USE_ENV_PROXY=1` (без него `fetch` в Node.js прокси не использует). Maven и Gradle переменные окружения
-  не читают: `entrypoint.sh` при старте создаёт `~/.m2/settings.xml` и `~/.gradle/gradle.properties` с прокси,
+  не читают: `scripts/build/entrypoint.sh` при старте создаёт `~/.m2/settings.xml` и `~/.gradle/gradle.properties` с прокси,
   если этих файлов ещё нет.
 
 Проверено: claude (api.anthropic.com), npm, pip, go, git (https), Maven, Gradle и `orca serve` работают;
 `example.com` → 403; прямой выход мимо прокси → нет соединения.
 
-Стартовый список (`egress/allowlist.txt`): Anthropic/Claude, `nodejs.org` (рантайм для `orca serve`), GitHub,
+Стартовый список (`settings/egress/allowlist.txt`): Anthropic/Claude, `nodejs.org` (рантайм для `orca serve`), GitHub,
 npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.example.com` — домен и поддомены,
 `example.com` — только сам домен; один домен в обеих формах squid сочтёт дублем.
 
 ### Изменить список
 
-Список встроен в образ (bind mount с хоста пока не работает, см. п. 2):
+`settings/egress/squid.conf` и `allowlist.txt` не входят в образ: `compose.yaml` монтирует их в egress
+только для чтения. Для этого папка проекта должна быть смонтирована в машину (п. 2, `-v A:\orca\docker:/mnt/a/orca/docker`),
+иначе egress не создаётся (`statfs ... settings/egress/...`) и у agent нет интернета.
 
 1. Посмотреть отказы (без админа):
    ```bat
    podman logs agent-box-egress-1 | findstr DENIED
    ```
    Строка `TCP_DENIED/403 CONNECT nodejs.org:443` — домен, который нужно добавить.
-2. Дописать домен в `egress/allowlist.txt`.
-3. Пересобрать (без админа) и пересоздать egress (от имени администратора):
+2. Дописать домен в `settings/egress/allowlist.txt`.
+3. Перезапустить egress (без админа, пересборка не нужна):
    ```bat
-   powershell -NoProfile -ExecutionPolicy Bypass -File A:\orca\docker\build.ps1
-   podman compose -f A:\orca\docker\compose.yaml up -d --force-recreate egress
+   podman restart agent-box-egress-1
+   podman logs --tail 20 agent-box-egress-1
    ```
-   Ошибка в `squid.conf` или списке ломает сборку (`squid -k parse`), а не запуск.
+   При старте squid проверяет конфиг (`squid -k parse`): с ошибкой в `squid.conf` или списке контейнер
+   не запустится, причина — в `podman logs`.
 
-Корпоративный прокси наверху — `cache_peer` в `egress/squid.conf`; `HTTP_PROXY` в `.env` игнорируется.
+Корпоративный прокси наверху — `cache_peer` в `settings/egress/squid.conf`; `HTTP_PROXY` в `.env` игнорируется.
+
+## 9. Langfuse: трейсы Claude Code
+
+Каждый ответ Claude Code в контейнере отправляется в Langfuse как трейс: промпт, ответ, вызовы инструментов.
+Используется официальный хук Stop из документации Langfuse
+(<https://langfuse.com/integrations/developer-tools/claude-code>):
+
+- скрипт `scripts/build/langfuse_hook.py` встроен в образ (`/usr/local/lib/agent-box/langfuse_hook.py`),
+  SDK `langfuse==4.18.0` — в отдельном venv `/opt/langfuse-hook` (скрипт привязан к SDK 4.x, версия — `LANGFUSE_VERSION` в `images/Dockerfile`);
+- хук зарегистрирован в `settings/managed-settings.json` рядом с dcg: агенты не могут его отключить;
+- включение и ключи — в `.env` (не в git), `env_file` передаёт их в контейнер:
+  ```
+  TRACE_TO_LANGFUSE=true
+  LANGFUSE_PUBLIC_KEY=pk-lf-...
+  LANGFUSE_SECRET_KEY=sk-lf-...
+  LANGFUSE_BASE_URL=https://cloud.langfuse.com
+  ```
+  Без `TRACE_TO_LANGFUSE=true` хук сразу завершается; при недоступном Langfuse не мешает работе (fail-open, flush до 5 с);
+- домен сервера — в `settings/egress/allowlist.txt` (`cloud.langfuse.com`); SDK ходит через `HTTPS_PROXY`.
+
+Лог и состояние хука — `~/.claude/state/` (`data/claude/state` на Windows), подробный лог — `CC_LANGFUSE_DEBUG=true`.
+Ключи видны агентам в окружении контейнера: используйте отдельный проект Langfuse для агентов.
+
+`orca.yaml` (секция `scripts.setup`, которую Orca предлагает при создании worktree) для этого не подходит: он лежит
+в корне каждого репозитория и выполняется при создании worktree — там место установке зависимостей проекта
+(`npm install`, `uv sync`), а не настройке агента.
 
 ## Проблемы
 
@@ -336,9 +423,10 @@ VM включена в Hyper-V без gvproxy (осталась от неуда�
 В `System32` пустой файл `podman` без расширения (обычно результат перенаправления `>` в консоли администратора).
 PowerShell находит его раньше `podman.exe`. Удалить от имени администратора: `del C:\Windows\System32\podman`.
 
-### `statfs /mnt/a/orca/docker/data/home: no such file or directory`
+### `statfs /mnt/a/orca/docker/settings/...: no such file or directory` (или `input/output error`)
 
 Папка проекта не смонтирована в VM по пути, который ожидает compose (п. 2, параметр `-v`).
+Та же ошибка с `settings/egress/squid.conf` — у egress (п. 8): без монтирования он не запускается.
 
 ### `java: command not found` / `orca: command not found` в контейнере
 
@@ -360,3 +448,8 @@ $env:CONTAINERS_MACHINE_PROVIDER = 'hyperv'
 podman machine stop agents
 podman machine rm agents
 ```
+
+## Полезное
+
+1. Agentic Design Patterns - https://mokevnin.github.io/agentic-coding-design-patterns/ru/
+2. https://martinfowler.com/articles/structured-prompt-driven/

@@ -1,6 +1,6 @@
 # ================================================================ agent-box
 # Запуск agent-box. Формат Compose Specification: работает с `docker compose` и `podman compose`.
-# Образ собирается заранее скриптом build.ps1 / build.sh.
+# Образ собирается заранее скриптом scripts/build/build.ps1 / build.sh.
 #
 #   cp .env.example .env                          # заполнить переменные
 #   docker compose up -d     | podman compose up -d
@@ -29,7 +29,7 @@ services:
       - path: .env
         required: false
     # Выход в интернет только через egress (environment важнее .env).
-    # Maven/Gradle: entrypoint.sh пишет прокси в ~/.m2 и ~/.gradle из HTTPS_PROXY
+    # Maven/Gradle: scripts/build/entrypoint.sh пишет прокси в ~/.m2 и ~/.gradle из HTTPS_PROXY
     environment:
       HTTP_PROXY: http://egress:3128
       HTTPS_PROXY: http://egress:3128
@@ -39,10 +39,14 @@ services:
       no_proxy: localhost,127.0.0.1,::1
       # fetch в Node.js без этого прокси не использует
       NODE_USE_ENV_PROXY: "1"
+      # Весь конфиг Claude Code, включая .claude.json, — в смонтированной папке data/claude
+      CLAUDE_CONFIG_DIR: /home/agent/.claude
+      # История bash в смонтированной data/bash
+      HISTFILE: /home/agent/.local/state/bash/history
 
     # ============================================================ сеть
     # agent-internal без выхода наружу и внешнего DNS: интернет только через egress.
-    # orca-ide serve (entrypoint.sh): только localhost, Orca на Windows подключается к 127.0.0.1.
+    # orca-ide serve (scripts/build/entrypoint.sh): только localhost, Orca на Windows подключается к 127.0.0.1.
     # Не 6768: его на Windows занимает рантайм десктопного Orca
     networks:
       - agent-internal
@@ -51,10 +55,29 @@ services:
     depends_on:
       - egress
 
-    # ============================================================ данные на хосте
-    #volumes:
-    #  - ${WORKSPACES_DIR:-./data/workspaces}:/workspaces
-    #  - ${AGENT_HOME_DIR:-./data/home}:/home/agent
+    # ============================================================ данные
+    # keep-id: пользователь VM (uid 1000, владелец папок с Windows) = agent (uid 1000) в контейнере,
+    # иначе agent не может писать в смонтированные папки
+    userns_mode: keep-id
+    volumes:
+      # Named volume на диске VM: кэши npm/Maven/Gradle/Go и прочий /home/agent.
+      # Удаляется только `down -v` и пересозданием машины
+      - agent-home:/home/agent
+      # Git-репозитории всех агентов: /repos = data/repos на Windows.
+      # Worktree Orca (workspaceDir по умолчанию ~/orca/workspaces) — в data/repos/orca-worktrees
+      - ./data/repos:/repos
+      - ./data/repos/orca-worktrees:/home/agent/orca/workspaces
+      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json — data/claude;
+      # инструкции агентам — статический settings/claude/CLAUDE.md, только чтение
+      - ./data/claude:/home/agent/.claude
+      - ./settings/claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
+      # Orca на Windows (data/orca): сессии, рабочие пространства, история терминалов, сопряжение, секреты
+      - ./data/orca/config:/home/agent/.config/orca
+      - ./data/orca/home:/home/agent/.orca
+      # Рантайм orcad (~150 МБ, скачивается с nodejs.org) — кэш, в named volume
+      - orcad-artifacts:/home/agent/.config/orca/orcad-artifacts
+      # История bash (HISTFILE)
+      - ./data/bash:/home/agent/.local/state/bash
 
     # ============================================================ ограничения
     cap_drop:
@@ -66,7 +89,8 @@ services:
     pids_limit: ${AGENT_PIDS:-1024}
 
   # ============================================================== egress
-  # squid: пропускает в интернет только домены из egress/allowlist.txt (встроен в образ).
+  # squid: пропускает в интернет только домены из settings/egress/allowlist.txt.
+  # Конфиг монтируется с хоста: после правки — podman restart agent-box-egress-1.
   # Лог запросов: podman logs agent-box-egress-1
   egress:
     image: ${EGRESS_IMAGE:-localhost/agent-box-egress:latest}
@@ -75,6 +99,10 @@ services:
     networks:
       - agent-internal
       - outside
+    # Файлами, а не папкой: в /etc/squid остаются mime.conf и conf.d из пакета
+    volumes:
+      - ./settings/egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./settings/egress/allowlist.txt:/etc/squid/allowlist.txt:ro
     cap_drop:
       - ALL
     security_opt:
@@ -88,3 +116,8 @@ networks:
     internal: true
   # Обычная сеть с выходом в интернет — только у egress
   outside: {}
+
+# Имена в podman: agent-box_agent-home, agent-box_orcad-artifacts
+volumes:
+  agent-home: {}
+  orcad-artifacts: {}

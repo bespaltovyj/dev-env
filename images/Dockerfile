@@ -3,10 +3,11 @@
 # Изолированное окружение для ИИ-агентов: Orca, Claude Code, dcg, Node.js, Python 3, uv, ruff,
 # pytest, Java 17/21/25 (Temurin), Maven, Gradle, Go, kubectl, Helm.
 #
-# Каждый компонент собирается отдельным образом из stages/<группа>/<name>.Dockerfile
-# (ai, go, jvm, k8s, python) и подключается сюда через
+# Каждый компонент собирается отдельным образом из images/<группа>/<name>.Dockerfile
+# (ai, common, go, js, jvm, k8s, python) и подключается сюда через
 # --build-context <name>=docker-image://localhost/agent-box/<name>:latest.
-# Собирать скриптом build.ps1 / build.sh, а не напрямую.
+# Собирать скриптом scripts/build/build.ps1 / build.sh, а не напрямую.
+# Контекст сборки — корень репозитория (файлы ограничивает .dockerignore).
 
 ARG DEBIAN_IMAGE=debian:trixie-slim
 FROM ${DEBIAN_IMAGE}
@@ -51,11 +52,19 @@ COPY --from=jdk25   /opt/jdk/        /usr/lib/jvm/temurin-25/
 COPY --from=maven   /opt/maven/      /opt/maven/
 COPY --from=gradle  /opt/gradle/     /opt/gradle/
 
-# Управляемые настройки Claude Code: хук dcg нельзя отключить из ~/.claude
-COPY managed-settings.json /etc/claude-code/managed-settings.json
+# Трейсинг Claude Code в Langfuse: официальный хук Stop (langfuse.com/integrations/developer-tools/claude-code)
+# в отдельном venv. Скрипт привязан к внутренностям SDK 4.x. Включается TRACE_TO_LANGFUSE=true и ключами в .env,
+# без них хук сразу завершается и ничего не отправляет.
+ARG LANGFUSE_VERSION=4.18.0
+RUN python3 -m venv /opt/langfuse-hook \
+ && /opt/langfuse-hook/bin/pip install --no-cache-dir "langfuse==${LANGFUSE_VERSION}"
+COPY scripts/build/langfuse_hook.py /usr/local/lib/agent-box/langfuse_hook.py
+
+# Управляемые настройки Claude Code: хуки dcg и Langfuse нельзя отключить из ~/.claude
+COPY settings/managed-settings.json /etc/claude-code/managed-settings.json
 
 # Точка входа: tmux-сессия orca с `orca-ide serve` (отключается ORCA_SERVE=0)
-COPY --chmod=755 entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY --chmod=755 scripts/build/entrypoint.sh /usr/local/bin/agent-entrypoint
 
 # ================================================================ окружение
 # Общие
@@ -116,11 +125,14 @@ RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
 # ================================================================ пользователь
 RUN groupadd --gid "${USER_GID}" agent \
  && useradd --uid "${USER_UID}" --gid agent --create-home --shell /bin/bash agent \
- && mkdir -p /workspaces \
- && chown agent:agent /workspaces
+ && mkdir -p /repos \
+ && chown agent:agent /repos
+
+# Git-репозитории всех агентов: compose.yaml монтирует сюда data/repos
+ENV REPOS_DIR=/repos
 
 USER agent
-WORKDIR /workspaces
+WORKDIR /repos
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/agent-entrypoint"]
 CMD ["bash"]

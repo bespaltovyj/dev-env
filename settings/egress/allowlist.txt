@@ -2,11 +2,15 @@
 #   .example.com — домен и все поддомены;  example.com — только сам домен.
 # Не указывать один домен в обеих формах: squid сочтёт это дублем.
 # Отказы видны в логе: podman logs agent-box-egress-1 | findstr DENIED
+# После правки: podman restart agent-box-egress-1 (пересборка не нужна)
 
 # Claude / Anthropic
 .anthropic.com
 .claude.ai
 .claude.com
+
+# Langfuse Cloud EU: трейсы Claude Code (хук Stop)
+cloud.langfuse.com
 
 # Orca: orca serve при первом запуске скачивает рантайм Node.js для orcad
 nodejs.org

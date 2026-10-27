@@ -1,3 +1,4 @@
 *
-!managed-settings.json
-!entrypoint.sh
+!settings/managed-settings.json
+!scripts/build/entrypoint.sh
+!scripts/build/langfuse_hook.py

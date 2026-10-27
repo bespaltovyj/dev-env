@@ -1,8 +1,11 @@
 ﻿# Сборка agent-box: downloader -> компоненты (параллельно) -> итоговый образ.
 #
-#   .\build.ps1                                       # всё
-#   .\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'        # аргументы передаются во все сборки
-#   .\build.ps1 -Engine docker -Jobs 8
+#   .\scripts\build\build.ps1                                  # всё
+#   .\scripts\build\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'   # аргументы передаются во все сборки
+#   .\scripts\build\build.ps1 -Engine docker -Jobs 8
+#
+# Пути (images\, .build-logs) считаются от корня репозитория, текущая папка не важна.
+# Требуется переменная окружения AGENT_ROOT.
 [CmdletBinding()]
 param(
     [string]   $Engine    = 'podman',
@@ -17,7 +20,15 @@ param(
 # Continue: в PowerShell 5.1 перенаправленный stderr podman при Stop прерывает скрипт;
 # результат сборок проверяется по $LASTEXITCODE
 $ErrorActionPreference = 'Continue'
-Set-Location $PSScriptRoot
+
+if (-not $env:AGENT_ROOT) {
+    Write-Host '!! не задана переменная окружения AGENT_ROOT' -ForegroundColor Red
+    exit 1
+}
+
+# Корень репозитория: скрипт лежит в scripts\build
+$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path.TrimEnd('\')
+Set-Location $Root
 
 # Волны: внутри волны компоненты собираются параллельно
 $Wave1 = @('node', 'jdk17', 'jdk21', 'jdk25', 'maven', 'gradle', 'go', 'uv', 'ruff', 'kubectl', 'helm', 'orca', 'dcg', 'claude')
@@ -44,11 +55,11 @@ function Get-ContextArgs([string[]] $Names) {
 function Get-ComponentArgs([string] $Name) {
     $argv = @('build') + $CommonArgs + @('--build-arg', "DOWNLOADER_IMAGE=$Prefix/downloader:latest")
     if ($Deps.ContainsKey($Name)) { $argv += Get-ContextArgs $Deps[$Name] }
-    # stages/<группа>/<name>.Dockerfile или stages/<name>.Dockerfile
-    $file = Get-ChildItem -Path stages -Recurse -Filter "$Name.Dockerfile" | Select-Object -First 1
-    if (-not $file) { throw "нет stages/**/$Name.Dockerfile" }
-    $rel = $file.FullName.Substring($PSScriptRoot.Length + 1).Replace('\', '/')
-    $argv += @('-t', "$Prefix/${Name}:latest", '-f', $rel, 'stages')
+    # images/<группа>/<name>.Dockerfile
+    $file = Get-ChildItem -Path images -Recurse -Filter "$Name.Dockerfile" | Select-Object -First 1
+    if (-not $file) { throw "нет images/**/$Name.Dockerfile" }
+    $rel = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
+    $argv += @('-t', "$Prefix/${Name}:latest", '-f', $rel, 'images')
     return $argv
 }
 
@@ -73,7 +84,7 @@ function Invoke-Wave([string[]] $Names) {
         }
         Write-Host "  -> $n"
         $running[$n] = Start-Job -ScriptBlock $BuildJob `
-            -ArgumentList $EnginePath, $PSScriptRoot, (Get-ComponentArgs $n), (Join-Path $LogRoot "$n.log")
+            -ArgumentList $EnginePath, $Root, (Get-ComponentArgs $n), (Join-Path $LogRoot "$n.log")
     }
     foreach ($n in @($running.Keys)) {
         $code = Receive-Job -Job $running[$n] -Wait
@@ -87,7 +98,7 @@ function Invoke-Wave([string[]] $Names) {
 }
 
 Write-Host '== downloader'
-$code = & $BuildJob $EnginePath $PSScriptRoot (Get-ComponentArgs 'downloader') (Join-Path $LogRoot 'downloader.log')
+$code = & $BuildJob $EnginePath $Root (Get-ComponentArgs 'downloader') (Join-Path $LogRoot 'downloader.log')
 if ($code -ne 0) { Show-Failure 'downloader'; exit 1 }
 
 Write-Host '== компоненты'
@@ -95,14 +106,14 @@ Invoke-Wave $Wave1
 Invoke-Wave $Wave2
 
 Write-Host "== $Image"
-$argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('-t', $Image, '-f', 'Dockerfile', '.')
+$argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('-t', $Image, '-f', 'images/Dockerfile', '.')
 & $EnginePath @argv 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $LogRoot 'final.log')
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-# Прокси для выхода agent в интернет (allowlist.txt встроен в образ)
+# Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
 Write-Host "== $EgressImage"
-$argv = @('build') + $CommonArgs + @('-t', $EgressImage, '-f', 'egress/Dockerfile', 'egress')
-$code = & $BuildJob $EnginePath $PSScriptRoot $argv (Join-Path $LogRoot 'egress.log')
+$argv = @('build') + $CommonArgs + @('-t', $EgressImage, '-f', 'images/egress/Dockerfile', 'images/egress')
+$code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'egress.log')
 if ($code -ne 0) { Show-Failure 'egress'; exit 1 }
 
 Write-Host "== готово: $Image, $EgressImage"

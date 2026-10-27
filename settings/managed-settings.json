@@ -7,6 +7,13 @@
           { "type": "command", "command": "/usr/local/bin/dcg" }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/opt/langfuse-hook/bin/python /usr/local/lib/agent-box/langfuse_hook.py", "timeout": 30 }
+        ]
+      }
     ]
   }
 }

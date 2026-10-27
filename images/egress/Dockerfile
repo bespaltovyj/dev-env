@@ -2,7 +2,8 @@
 # Выход agent в интернет: squid пропускает только домены из allowlist.txt, остальное — 403 и запись в лог.
 # HTTPS не расшифровывается: домен берётся из CONNECT. Образ: localhost/agent-box-egress
 #
-# allowlist.txt встроен в образ: после правки — .\build.ps1 и пересоздать сервис egress.
+# Конфиг в образ не входит: compose.yaml монтирует settings/egress/squid.conf и allowlist.txt
+# в /etc/squid. После правки — перезапустить контейнер egress, пересборка не нужна.
 
 ARG DEBIAN_IMAGE=debian:trixie-slim
 FROM ${DEBIAN_IMAGE}
@@ -11,12 +12,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends squid \
  && rm -rf /var/lib/apt/lists/*
 
-COPY squid.conf    /etc/squid/squid.conf
-COPY allowlist.txt /etc/squid/allowlist.txt
-
-# Ошибка в конфиге или списке ломает сборку, а не запуск
-RUN squid -k parse -f /etc/squid/squid.conf
-
 USER proxy
 EXPOSE 3128
-ENTRYPOINT ["squid", "-N", "-f", "/etc/squid/squid.conf"]
+# Ошибка в конфиге или списке останавливает запуск с сообщением squid, а не ломает работу молча
+ENTRYPOINT ["/bin/sh", "-c", "squid -k parse -f /etc/squid/squid.conf && exec squid -N -f /etc/squid/squid.conf"]

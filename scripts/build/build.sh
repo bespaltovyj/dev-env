@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # Сборка agent-box: downloader -> компоненты (параллельно) -> итоговый образ.
 #
-#   ./build.sh                              # всё
-#   ./build.sh --build-arg GO_VERSION=...   # аргументы передаются во все сборки
-#   ENGINE=docker JOBS=8 ./build.sh
+#   ./scripts/build/build.sh                              # всё
+#   ./scripts/build/build.sh --build-arg GO_VERSION=...   # аргументы передаются во все сборки
+#   ENGINE=docker JOBS=8 ./scripts/build/build.sh
+#
+# Пути (images/, .build-logs) считаются от корня репозитория, текущая папка не важна.
 #
 # Переменные: ENGINE (podman), PREFIX (localhost/agent-box), IMAGE (localhost/agent-box:latest),
 #             EGRESS_IMAGE (localhost/agent-box-egress:latest), JOBS (4 параллельные сборки), LOG_DIR (.build-logs)
+# Требуется переменная окружения AGENT_ROOT.
 set -euo pipefail
 
-cd "$(dirname "$0")"
+: "${AGENT_ROOT:?не задана переменная окружения AGENT_ROOT}"
+
+# Корень репозитория: скрипт лежит в scripts/build
+cd "$(dirname "$0")/../.."
 
 ENGINE="${ENGINE:-podman}"
 PREFIX="${PREFIX:-localhost/agent-box}"
@@ -40,11 +46,11 @@ context_args() {
   done
 }
 
-# stages/<группа>/<name>.Dockerfile или stages/<name>.Dockerfile
+# images/<группа>/<name>.Dockerfile
 stage_file() {
   local file
-  file="$(find stages -name "$1.Dockerfile" -print -quit)"
-  [[ -n "$file" ]] || { echo "!! нет stages/**/$1.Dockerfile" >&2; return 1; }
+  file="$(find images -name "$1.Dockerfile" -print -quit)"
+  [[ -n "$file" ]] || { echo "!! нет images/**/$1.Dockerfile" >&2; return 1; }
   echo "$file"
 }
 
@@ -55,7 +61,7 @@ build_component() {
   "$ENGINE" build "${COMMON_ARGS[@]}" \
     --build-arg "DOWNLOADER_IMAGE=$PREFIX/downloader:latest" \
     "${deps[@]}" "${EXTRA_ARGS[@]}" \
-    -t "$PREFIX/$name:latest" -f "$file" stages \
+    -t "$PREFIX/$name:latest" -f "$file" images \
     >"$LOG_DIR/$name.log" 2>&1
 }
 
@@ -90,11 +96,11 @@ build_wave "${WAVE2[@]}"
 echo "== $IMAGE"
 mapfile -t FINAL_CONTEXTS < <(context_args "${WAVE1[@]}" "${WAVE2[@]}")
 "$ENGINE" build "${COMMON_ARGS[@]}" "${FINAL_CONTEXTS[@]}" "${EXTRA_ARGS[@]}" \
-  -t "$IMAGE" -f Dockerfile . 2>&1 | tee "$LOG_DIR/final.log"
+  -t "$IMAGE" -f images/Dockerfile . 2>&1 | tee "$LOG_DIR/final.log"
 
-# Прокси для выхода agent в интернет (allowlist.txt встроен в образ)
+# Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
 echo "== $EGRESS_IMAGE"
-"$ENGINE" build "${COMMON_ARGS[@]}" -t "$EGRESS_IMAGE" -f egress/Dockerfile egress \
+"$ENGINE" build "${COMMON_ARGS[@]}" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
   >"$LOG_DIR/egress.log" 2>&1 || { tail -n 20 "$LOG_DIR/egress.log" >&2; exit 1; }
 
 echo "== готово: $IMAGE, $EGRESS_IMAGE"
