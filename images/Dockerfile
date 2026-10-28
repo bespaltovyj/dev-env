@@ -18,12 +18,14 @@ ARG USER_GID=1000
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ================================================================ системные пакеты
-# Базовые утилиты, git, компиляторы, Python 3 и pip
+# Базовые утилиты, git, компиляторы, Python 3 и pip, клиент PostgreSQL (psql, createdb; 17 из Debian,
+# с сервером 18 работает)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-client build-essential \
       tini tmux less procps jq ripgrep \
       python3 python3-pip python3-venv \
+      postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
 # Orca: .deb подключается из образа orca без копирования в слой. CLI называется orca-ide.

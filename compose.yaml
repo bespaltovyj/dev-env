@@ -118,6 +118,36 @@ services:
     mem_limit: 256m
     pids_limit: 256
 
+  # ============================================================== postgres
+  # PostgreSQL 18 для агентов: из agent — postgres:5432, с Windows — 127.0.0.1:5432.
+  # Данные — data/postgres (в образе 18 PGDATA=/var/lib/postgresql/18/docker, монтируется родитель).
+  # keep-id + uid 1000: владелец папок с Windows (пользователь VM) = процесс postgres, как у agent.
+  # Пароль и пользователь задаются только при первом запуске (пустая data/postgres)
+  postgres:
+    image: docker.io/library/postgres:18.6-trixie
+    restart: unless-stopped
+    userns_mode: keep-id
+    user: "1000:1000"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+    networks:
+      - agent-internal
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${POSTGRES_MEMORY:-512m}
+
   # ============================================================== мониторинг (профиль monitoring)
   # Все данные идут через otel-collector, хранятся в Victoria*, данные на Windows — data/monitoring.
   # Все порты только на 127.0.0.1.

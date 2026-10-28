@@ -20,6 +20,7 @@ data/                               не в git: изменяемые данны
 ├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
 ├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
 ├── bash/                           история bash (HISTFILE)
+├── postgres/                       данные PostgreSQL 18 (п. 11)
 └── monitoring/                     данные VictoriaMetrics, VictoriaLogs, VictoriaTraces, Grafana (п. 10)
 images/
 ├── Dockerfile                      итоговый образ localhost/agent-box
@@ -462,6 +463,33 @@ VictoriaLogs ставится при сборке образа (`images/monitori
 Данные `data/monitoring` лежат на Windows (9p): VictoriaMetrics/Logs/Traces и SQLite Grafana на 9p медленнее
 и менее надёжны, чем на диске VM. Срок хранения — `METRICS_RETENTION` (30d), `LOGS_RETENTION` (14d),
 `TRACES_RETENTION` (7d) в `.env`.
+
+## 11. PostgreSQL 18
+
+Сервис `postgres` (`postgres:18.6-trixie`) запускается вместе с agent, без профиля.
+
+| Откуда | Адрес |
+|---|---|
+| контейнер agent | `postgres:5432` (сеть `agent-internal`), клиент `psql`/`createdb` есть в образе |
+| Windows | `127.0.0.1:5432` (`POSTGRES_PORT` в `.env`) |
+
+- Пользователь, пароль и БД — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` в `.env`. Они применяются только
+  при первом запуске, когда `data/postgres` пуста; потом пароль меняется через `ALTER USER`. Переменные из `.env`
+  видны и в agent, поэтому агенты подключаются без отдельной настройки (`settings/claude/CLAUDE.md`).
+- Данные — `data/postgres` на Windows. В образе 18 `PGDATA=/var/lib/postgresql/18/docker`, поэтому монтируется
+  родитель `/var/lib/postgresql`: обновление на 19 сможет положить данные рядом в `19/docker`.
+- Права: `userns_mode: keep-id` и `user: "1000:1000"`, как у agent: владелец папок с Windows (пользователь VM)
+  совпадает с процессом postgres. Образ поддерживает произвольный uid.
+- Нет выхода в интернет: только сеть `agent-internal`.
+
+`data/postgres` лежит на 9p: PostgreSQL требует права `0700` на каталог данных и надёжный `fsync`. Если сервер
+не стартует с `data directory ... has invalid permissions` или пишет ошибки ввода-вывода — перенести данные в
+named volume (`postgres-data:/var/lib/postgresql`).
+
+```bat
+podman exec -it agent-box-postgres-1 psql -U postgres                 :: консоль
+podman exec agent-box-postgres-1 pg_dumpall -U postgres > dump.sql    :: резервная копия на Windows
+```
 
 ## Проблемы
 ### `machine is not listening on ssh port`, а `machine list` показывает `Currently running`

@@ -1,6 +1,10 @@
-# Скрипты и Dockerfile выполняются в Linux: только LF, независимо от core.autocrlf
-*.sh          text eol=lf
-Dockerfile    text eol=lf
-*.Dockerfile  text eol=lf
-settings/egress/*  text eol=lf
-*.py          text eol=lf
+# По умолчанию — переводы строк Linux (LF) в репозитории и в рабочей копии, независимо от core.autocrlf:
+# файлы монтируются в контейнеры и выполняются в Linux
+*             text=auto eol=lf
+
+# Файлы, которые выполняет только Windows: CRLF
+*.ps1         text eol=crlf
+*.psm1        text eol=crlf
+*.psd1        text eol=crlf
+*.cmd         text eol=crlf
+*.bat         text eol=crlf
