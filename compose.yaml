@@ -44,9 +44,9 @@ services:
       no_proxy: localhost,127.0.0.1,::1,otel-collector
       # fetch в Node.js без этого прокси не использует
       NODE_USE_ENV_PROXY: "1"
-      # Весь конфиг Claude Code, включая .claude.json, — в смонтированной папке data/claude
+      # Весь конфиг Claude Code, включая .claude.json, — в томе claude
       CLAUDE_CONFIG_DIR: /home/agent/.claude
-      # История bash в смонтированной data/bash
+      # История bash — в томе bash-history
       HISTFILE: /home/agent/.local/state/bash/history
 
     # ============================================================ сеть
@@ -61,28 +61,35 @@ services:
       - egress
 
     # ============================================================ данные
-    # keep-id: пользователь VM (uid 1000, владелец папок с Windows) = agent (uid 1000) в контейнере,
-    # иначе agent не может писать в смонтированные папки
-    userns_mode: keep-id
+    # Все изменяемые данные — в named volume на диске VM (обычная файловая система Linux).
+    # Удаляются только `down -v`, `podman volume rm` и пересозданием машины; резервная копия —
+    # podman volume export (README.md, «Резервная копия томов»).
+    # Podman отдаёт новый том пользователю контейнера (agent), userns keep-id не нужен:
+    # uid 1000 в контейнере — непривилегированный subuid в VM, а не пользователь, владеющий podman
     volumes:
-      # Named volume на диске VM: кэши npm/Maven/Gradle/Go и прочий /home/agent.
-      # Удаляется только `down -v` и пересозданием машины
+      # Кэши npm/Maven/Gradle/Go и прочий /home/agent
       - agent-home:/home/agent
-      # Git-репозитории всех агентов: /repos = data/repos на Windows.
-      # Worktree Orca (workspaceDir по умолчанию ~/orca/workspaces) — в data/repos/orca-worktrees
-      - ./data/repos:/repos
-      - ./data/repos/orca-worktrees:/home/agent/orca/workspaces
-      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json — data/claude;
+      # Git-репозитории всех агентов
+      - repos:/repos
+      # Не работает в Podman на Hyper-V: data/ подключается в VM по 9p, а 9p-сервер Podman не хранит
+      # владельца и права Linux. Внутри контейнера всё принадлежит nobody (65534) с правами 777,
+      # chmod/chown дают «Operation not permitted», блокировок файлов нет (ENOSYS):
+      # git init/clone падают на chmod .git/config.lock, Orca — на проверке владельца ~/.config/orca,
+      # PostgreSQL — на chmod каталога данных.
+      # - ./data/repos:/repos
+      # Worktree Orca (workspaceDir по умолчанию ~/orca/workspaces)
+      - orca-worktrees:/home/agent/orca/workspaces
+      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json;
       # инструкции агентам — статический settings/claude/CLAUDE.md, только чтение
-      - ./data/claude:/home/agent/.claude
+      - claude:/home/agent/.claude
       - ./settings/claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
-      # Orca на Windows (data/orca): сессии, рабочие пространства, история терминалов, сопряжение, секреты
-      - ./data/orca/config:/home/agent/.config/orca
-      - ./data/orca/home:/home/agent/.orca
-      # Рантайм orcad (~150 МБ, скачивается с nodejs.org) — кэш, в named volume
+      # Orca: сессии, рабочие пространства, история терминалов, сопряжение, секреты
+      - orca-config:/home/agent/.config/orca
+      - orca-home:/home/agent/.orca
+      # Рантайм orcad (~150 МБ, скачивается с nodejs.org) — кэш
       - orcad-artifacts:/home/agent/.config/orca/orcad-artifacts
       # История bash (HISTFILE)
-      - ./data/bash:/home/agent/.local/state/bash
+      - bash-history:/home/agent/.local/state/bash
 
     # ============================================================ ограничения
     cap_drop:
@@ -120,20 +127,17 @@ services:
 
   # ============================================================== postgres
   # PostgreSQL 18 для агентов: из agent — postgres:5432, с Windows — 127.0.0.1:5432.
-  # Данные — data/postgres (в образе 18 PGDATA=/var/lib/postgresql/18/docker, монтируется родитель).
-  # keep-id + uid 1000: владелец папок с Windows (пользователь VM) = процесс postgres, как у agent.
-  # Пароль и пользователь задаются только при первом запуске (пустая data/postgres)
+  # Данные — том postgres (в образе 18 PGDATA=/var/lib/postgresql/18/docker, монтируется родитель).
+  # Пароль и пользователь задаются только при первом запуске (пустой том)
   postgres:
     image: docker.io/library/postgres:18.6-trixie
     restart: unless-stopped
-    userns_mode: keep-id
-    user: "1000:1000"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-postgres}
     volumes:
-      - ./data/postgres:/var/lib/postgresql
+      - postgres:/var/lib/postgresql
     networks:
       - agent-internal
     ports:
@@ -148,8 +152,48 @@ services:
       - no-new-privileges:true
     mem_limit: ${POSTGRES_MEMORY:-512m}
 
+  # ============================================================== backup
+  # Резервные копии томов в data/backup на Windows (settings/backup/backup.sh): раз в час, только если
+  # данные изменились, последние 2 копии — <том>.tar и дамп postgres.sql. Образ postgres — ради pg_dumpall
+  # той же версии, что и сервер. Кэши (agent-home, orcad-artifacts) и Victoria* (временные ряды с
+  # ограниченным сроком хранения, меняются постоянно) не копируются.
+  # Лог: podman logs agent-box-backup-1
+  backup:
+    image: docker.io/library/postgres:18.6-trixie
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/opt/backup/backup.sh"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL:-3600}
+      BACKUP_KEEP: ${BACKUP_KEEP:-2}
+    volumes:
+      - ./settings/backup/backup.sh:/opt/backup/backup.sh:ro
+      # Запись готовых файлов на 9p работает (не работают права, владелец и блокировки — им tar не нужен)
+      - ./data/backup:/backup
+      - repos:/volumes/repos:ro
+      - orca-worktrees:/volumes/orca-worktrees:ro
+      - claude:/volumes/claude:ro
+      - orca-config:/volumes/orca-config:ro
+      - orca-home:/volumes/orca-home:ro
+      - bash-history:/volumes/bash-history:ro
+      - grafana:/volumes/grafana:ro
+    # Только до postgres, без выхода в интернет
+    networks:
+      - agent-internal
+    depends_on:
+      - postgres
+    # DAC_READ_SEARCH: читать файлы других пользователей в томах (секреты Orca и Claude с правами 600)
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+
   # ============================================================== мониторинг (профиль monitoring)
-  # Все данные идут через otel-collector, хранятся в Victoria*, данные на Windows — data/monitoring.
+  # Все данные идут через otel-collector, хранятся в Victoria* (named volume).
   # Все порты только на 127.0.0.1.
 
   # Приём: OTLP (4317 gRPC, 4318 HTTP), Prometheus remote write (9090), scrape экспортеров и стека.
@@ -253,7 +297,7 @@ services:
       - -storageDataPath=/storage
       - -retentionPeriod=${METRICS_RETENTION:-30d}
     volumes:
-      - ./data/monitoring/victoria-metrics:/storage
+      - victoria-metrics:/storage
     networks: [monitoring]
     ports:
       - "127.0.0.1:8428:8428"
@@ -267,7 +311,7 @@ services:
       - -storageDataPath=/storage
       - -retentionPeriod=${LOGS_RETENTION:-14d}
     volumes:
-      - ./data/monitoring/victoria-logs:/storage
+      - victoria-logs:/storage
     networks: [monitoring]
     ports:
       - "127.0.0.1:9428:9428"
@@ -281,7 +325,7 @@ services:
       - -storageDataPath=/storage
       - -retentionPeriod=${TRACES_RETENTION:-7d}
     volumes:
-      - ./data/monitoring/victoria-traces:/storage
+      - victoria-traces:/storage
     networks: [monitoring]
     ports:
       - "127.0.0.1:10428:10428"
@@ -306,14 +350,12 @@ services:
 
   # Образ собирают scripts/build (images/monitoring/grafana.Dockerfile): плагин VictoriaLogs ставится
   # при сборке, в работе выхода в интернет нет. БД не нужна: пользователи и дашборды — во встроенной
-  # SQLite (data/monitoring/grafana), источники данных — settings/monitoring/grafana/provisioning.
-  # root: папки с Windows принадлежат пользователю VM, а он в rootless-контейнере — root
+  # SQLite (том grafana), источники данных — settings/monitoring/grafana/provisioning.
   grafana:
     image: ${GRAFANA_IMAGE:-localhost/agent-box-grafana:latest}
     pull_policy: never
     profiles: [monitoring]
     restart: unless-stopped
-    user: "0"
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
@@ -323,7 +365,7 @@ services:
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
     volumes:
-      - ./data/monitoring/grafana:/var/lib/grafana
+      - grafana:/var/lib/grafana
       - ./settings/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     networks: [monitoring]
     ports:
@@ -344,7 +386,20 @@ networks:
   monitoring:
     internal: true
 
-# Имена в podman: agent-box_agent-home, agent-box_orcad-artifacts
+# Named volume на диске VM. Имена в podman: agent-box_<имя> (podman volume ls).
+# Резервная копия: podman volume export (README.md, «Резервная копия томов»)
 volumes:
   agent-home: {}
+  repos: {}
+  orca-worktrees: {}
+  claude: {}
+  orca-config: {}
+  orca-home: {}
   orcad-artifacts: {}
+  bash-history: {}
+  postgres: {}
+  # Профиль monitoring
+  victoria-metrics: {}
+  victoria-logs: {}
+  victoria-traces: {}
+  grafana: {}

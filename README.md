@@ -7,7 +7,7 @@
 │                                                             │          │                                                              │
 │ ┌─ gvproxy.exe ───────────────────────────────────────────┐ │          │ vsock-network.service → tap0 192.168.127.2                   │
 │ │ 127.0.0.1:52230  SSH ───────────────────────────────────┼─┼─ hvsock ─► sshd :22  (podman API, rootless, core)                       │
-│ │ hvsock 0000DD87-… — сеть VM                             │ │          │ /mnt/a/orca/docker/{data,settings:ro} ◄─ 9p ◄─ A:\orca\docker│
+│ │ hvsock 0000DD87-… — сеть VM                             │ │          │ /mnt/a/orca/docker/settings:ro ◄─ 9p ◄─ A:\orca\docker       │
 │ │                                                         │ │          │                                                              │
 │ │ 1. sudo podman machine start                            │ │          │                                                              │
 │ │ 2. .\scripts\build\build.ps1 или build.sh               │ │          │ ┌─ контейнер agent-box-agent-1 ────────────────────────────┐ │
@@ -26,7 +26,7 @@
 │ │ десктоп, окно  │ │ build/run/exec: │                      │          │ │ ┌─ tmux-сессия «main» ─────────────────────────────────┐ │ │
 │ │ свой рантайм   │ │   пользователь  │                      │          │ │ │ bash · claude · java · mvn · gradle · go · python    │ │ │
 │ │ :6768 (занят)  │ │ machine/compose:│                      │          │ │ └──────────────────────────────────────────────────────┘ │ │
-│ └────────────────┘ │   администратор │                      │          │ │ /repos ◄─ data/repos · ~/.claude ◄─ data/claude          │ │
+│ └────────────────┘ │   администратор │                      │          │ │ /repos, ~/.claude, ~/.config/orca … ◄─ named volume (VM) │ │
 │                    └─────────────────┘                      │          │ └─────┬────────────────────────────────────────────────────┘ │
 │                                                             │          │       │ HTTP(S)_PROXY → egress:3128                          │          ┌── internet ────────┐
 │                                                             │          │ ┌─────▼─ контейнер agent-box-egress-1 ─────────────────────┐ │          │                    │
@@ -53,14 +53,10 @@ settings/                           только статические наст
 ├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
 ├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
 ├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час («Резервная копия томов»)
 └── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
-data/                               не в git: изменяемые данные контейнера (п. 6)
-├── claude/                         ~/.claude: логин, сессии, история, settings.json Claude Code
-├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
-├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
-├── bash/                           история bash (HISTFILE)
-├── postgres/                       данные PostgreSQL 18 (п. 11)
-└── monitoring/                     данные VictoriaMetrics, VictoriaLogs, VictoriaTraces, Grafana (п. 10)
+data/backup/                        не в git: резервные копии томов, их делает сервис backup («Резервная копия томов»).
+                                    Сами данные контейнеров — в named volume на диске VM (п. 6)
 images/
 ├── Dockerfile                      итоговый образ localhost/agent-box
 ├── common/common.Dockerfile        базовый образ: Debian, apt по https, curl (на нём собираются все)
@@ -85,8 +81,7 @@ scripts/build/
 **1. Создать и запустить машину** — PowerShell от имени администратора (п. 2, 3):
 
 ```powershell
-New-Item -ItemType Directory -Force A:\orca\docker\data\claude, A:\orca\docker\data\repos\orca-worktrees, A:\orca\docker\data\orca\config, A:\orca\docker\data\orca\home, A:\orca\docker\data\bash, A:\orca\docker\data\postgres | Out-Null
-podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 60 -v A:\orca\docker\data:/mnt/a/orca/docker/data -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro
+podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro -v A:\orca\docker\data:/mnt/a/orca/docker/data
 Set-VM -Name agents -AutomaticStartAction Nothing
 podman machine start agents
 podman system connection default agents
@@ -97,6 +92,7 @@ podman system connection default agents
 ```powershell
 Set-Location A:\orca\docker
 Copy-Item .env.example .env                                   # заполнить: POSTGRES_PASSWORD, ключи и т.д.
+New-Item -ItemType Directory -Force data\backup | Out-Null    # сюда сервис backup пишет резервные копии
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass    # разрешить .ps1 только в этом окне
 .\scripts\build\build.ps1
 ```
@@ -125,6 +121,66 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
 
 **Каждый следующий раз** — от имени администратора: `podman machine start agents`, затем
 `podman compose -f A:\orca\docker\compose.yaml up -d`; код сопряжения новый при каждом запуске сервера.
+
+## Резервная копия томов
+
+Все данные контейнеров — в named volume на диске VM: с Windows они не видны и удаляются вместе с машиной
+(`podman machine rm`). Копии на Windows делает сервис `backup` (`settings/backup/backup.sh`), он запускается
+вместе с остальными:
+
+- раз в час (`BACKUP_INTERVAL` в `.env`, секунды) снимает дамп PostgreSQL (`pg_dumpall`) и отпечаток всех файлов
+  томов (путь, размер, время изменения, права); если с прошлой копии ничего не изменилось — пропускает;
+- иначе пишет `data\backup\<дата-время>\`: `<том>.tar` для `repos`, `orca-worktrees`, `claude`, `orca-config`,
+  `orca-home`, `bash-history`, `grafana` и `postgres.sql`; готовая копия помечается файлом `COMPLETE`;
+- хранит 2 последние копии (`BACKUP_KEEP`), старые и незавершённые удаляет;
+- кэши (`agent-home`, `orcad-artifacts`) и Victoria* (временные ряды со сроком хранения) не копирует.
+
+Тома подключены к нему только для чтения, выхода в интернет нет. Контейнеры на паузу не ставятся: SQLite Orca и
+Grafana, записанные во время копирования, могут оказаться в архиве несогласованными (`tar` пишет об этом
+в лог) — следующая копия через час будет целой. PostgreSQL копируется дампом, это всегда согласованно.
+`data\backup` пишется по 9p (п. 2): запись готовых файлов работает, ей не нужны права и владелец.
+
+```bat
+podman logs agent-box-backup-1          :: когда сделана копия / «без изменений»
+dir A:\orca\docker\data\backup          :: две последние копии
+```
+
+Восстановление — до запуска контейнеров, в существующий пустой том (`podman volume import` сохраняет владельца
+и права файлов). PostgreSQL — из дампа в запущенный сервер:
+
+```bat
+podman volume create agent-box_repos
+podman volume import agent-box_repos A:\orca\docker\data\backup\20261029-130000\repos.tar
+podman cp A:\orca\docker\data\backup\20261029-130000\postgres.sql agent-box-postgres-1:/tmp/postgres.sql
+podman exec agent-box-postgres-1 psql -U postgres -f /tmp/postgres.sql postgres
+```
+
+Разовая полная копия всех томов вручную (без прав администратора; контейнеры на паузе — копия согласованная).
+Тома мониторинга существуют, только если запускался профиль `monitoring`, иначе их строки дадут `no such volume`:
+
+```bat
+mkdir A:\orca\docker\data\backup\manual
+podman pause agent-box-agent-1 agent-box-postgres-1
+podman volume export agent-box_repos            -o A:\orca\docker\data\backup\manual\repos.tar
+podman volume export agent-box_orca-worktrees   -o A:\orca\docker\data\backup\manual\orca-worktrees.tar
+podman volume export agent-box_claude           -o A:\orca\docker\data\backup\manual\claude.tar
+podman volume export agent-box_orca-config      -o A:\orca\docker\data\backup\manual\orca-config.tar
+podman volume export agent-box_orca-home        -o A:\orca\docker\data\backup\manual\orca-home.tar
+podman volume export agent-box_bash-history     -o A:\orca\docker\data\backup\manual\bash-history.tar
+podman volume export agent-box_postgres         -o A:\orca\docker\data\backup\manual\postgres.tar
+podman volume export agent-box_agent-home       -o A:\orca\docker\data\backup\manual\agent-home.tar
+podman volume export agent-box_orcad-artifacts  -o A:\orca\docker\data\backup\manual\orcad-artifacts.tar
+podman unpause agent-box-agent-1 agent-box-postgres-1
+podman pause agent-box-victoria-metrics-1 agent-box-victoria-logs-1 agent-box-victoria-traces-1 agent-box-grafana-1
+podman volume export agent-box_victoria-metrics -o A:\orca\docker\data\backup\manual\victoria-metrics.tar
+podman volume export agent-box_victoria-logs    -o A:\orca\docker\data\backup\manual\victoria-logs.tar
+podman volume export agent-box_victoria-traces  -o A:\orca\docker\data\backup\manual\victoria-traces.tar
+podman volume export agent-box_grafana          -o A:\orca\docker\data\backup\manual\grafana.tar
+podman unpause agent-box-victoria-metrics-1 agent-box-victoria-logs-1 agent-box-victoria-traces-1 agent-box-grafana-1
+```
+
+Сервис `backup` папку `manual` не трогает: он работает только с папками вида `<дата-время>`.
+
 
 ## 1. Права: что требует администратора
 
@@ -171,7 +227,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # только те
 PowerShell **от имени администратора** (`init` пишет в реестр `HKLM`):
 
 ```powershell
-podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 60 -v A:\orca\docker\data:/mnt/a/orca/docker/data -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro
+podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro -v A:\orca\docker\data:/mnt/a/orca/docker/data
 ```
 
 | Параметр | Значение |
@@ -181,14 +237,30 @@ podman machine init agents --provider hyperv --image docker://quay.io/podman/mac
 | `--cpus 6` | 6 виртуальных CPU |
 | `--memory 8192` | 8 ГБ памяти |
 | `--swap 0` | без swap |
-| `--disk-size 60` | диск 60 ГБ |
-| `-v ...\data` | данные контейнеров (п. «Структура», `data/`), чтение и запись |
+| `--disk-size 100` | диск 100 ГБ: образы, кэши и все тома с данными (п. 6). Файл `.vhdx` растёт по мере заполнения |
 | `-v ...\settings:...:ro` | статические настройки, VM и контейнеры видят их только для чтения |
+| `-v ...\data` | только для резервных копий: сервис `backup` пишет архивы томов в `data\backup` |
 
-Других папок Windows машина не видит: `compose.yaml` монтирует в контейнеры только `./data/...` и `./settings/...`
-(образы собираются без монтирования — контекст сборки передаётся через API). Цель `-v` обязана быть
-`/mnt/<диск>/<путь>` той же папки: compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings`.
-Если проект лежит в другом месте, поменять оба пути. Папку `data` создать до `init`, если её ещё нет.
+Других папок Windows машина не видит: `compose.yaml` монтирует с Windows только `./settings/...` и
+`./data/backup` (сервис `backup`), все изменяемые данные — в named volume на диске VM (п. 6). Образы собираются
+без монтирования: контекст сборки передаётся через API. Цель `-v` обязана быть `/mnt/<диск>/<путь>` той же папки:
+compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings`. Если проект лежит в другом месте,
+поменять пути.
+
+Если места не хватает, диск увеличивается без пересоздания машины (данные сохраняются, уменьшить нельзя):
+
+```powershell
+podman machine stop agents
+podman machine set --disk-size 120 agents
+podman machine start agents
+```
+
+Папки Windows для изменяемых данных в Hyper-V не подходят: 9p-сервер Podman не хранит владельца и права Linux.
+В контейнере всё принадлежит `nobody` (65534) с правами `777`, `chmod`/`chown` дают `Operation not permitted`,
+блокировок файлов нет (`ENOSYS`, [podman #29974](https://github.com/podman-container-tools/podman/issues/29974)).
+На этом падают `git init`/`git clone` (`chmod .git/config.lock`), Orca (`orcad_data_root_wrong_owner`) и
+PostgreSQL (`initdb: could not change permissions`). Запись готовых файлов (архивы `tar`) при этом работает —
+поэтому `data` подключена только ради резервных копий.
 
 Монтирование меняется только пересозданием машины (`rm` + `init`), образы и named volume при этом удаляются.
 
@@ -261,44 +333,38 @@ podman compose -f A:\orca\docker\compose.yaml down                              
 
 Без прав администратора то же через обычный podman: `podman exec -it agent-box-agent-1 tmux new -A -s main`.
 
-`~/.claude` контейнера смонтирован из `data/claude` (`CLAUDE_CONFIG_DIR`, туда же попадает `.claude.json`):
+`~/.claude` контейнера — том `claude` (`CLAUDE_CONFIG_DIR`, туда же попадает `.claude.json`):
 логин, сессии, история и `settings.json` (в него пишут Orca и сам Claude) переживают пересоздание контейнера.
 Поверх него только для чтения монтируется статический `settings/claude/CLAUDE.md` из git: агенты его не изменят.
 Это отдельный конфиг, не `~/.claude` хоста: хуки хоста с путями Windows в Linux не работают, а запись агентов
 в конфиг хоста дала бы им выполнение команд на Windows.
-`userns_mode: keep-id` нужен, чтобы agent мог писать в папки, смонтированные с Windows.
 
-Где хранятся данные контейнера:
+Все изменяемые данные — в named volume на диске VM (папки Windows не подходят, п. 2). Новый том podman отдаёт
+пользователю контейнера, поэтому `userns_mode: keep-id` не нужен: uid 1000 в контейнере — непривилегированный
+subuid в VM, а не пользователь `core`, которому принадлежит podman.
 
-| В контейнере | Где | Что |
+| В контейнере | Том (`agent-box_<имя>`) | Что |
 |---|---|---|
-| `~/.claude` | `data/claude` на Windows | логин, сессии, история, `settings.json` Claude Code |
-| `~/.claude/CLAUDE.md` | `settings/claude/CLAUDE.md`, только чтение | инструкции агентам (в git) |
-| `/repos` | `data/repos` на Windows | git-репозитории всех агентов (рабочая папка контейнера, `$REPOS_DIR`) |
-| `~/orca/workspaces` | `data/repos/orca-worktrees` на Windows | worktree, которые создаёт Orca (её `workspaceDir` по умолчанию) |
-| `~/.config/orca`, `~/.orca` | `data/orca/config`, `data/orca/home` на Windows | сессии и рабочие пространства Orca, история терминалов, сопряжение, секреты orcad |
-| `~/.local/state/bash` | `data/bash` на Windows | история bash (`HISTFILE`) |
-| `~/.config/orca/orcad-artifacts` | named volume `agent-box_orcad-artifacts` | рантайм orcad (~150 МБ), скачивается с nodejs.org |
-| остальной `/home/agent` | named volume `agent-box_agent-home` | кэши npm, Maven, Gradle, Go, `~/.m2/settings.xml` |
+| `/repos` | `repos` | git-репозитории всех агентов (рабочая папка контейнера, `$REPOS_DIR`) |
+| `~/orca/workspaces` | `orca-worktrees` | worktree, которые создаёт Orca (её `workspaceDir` по умолчанию) |
+| `~/.claude` | `claude` | логин, сессии, история, `settings.json` Claude Code |
+| `~/.claude/CLAUDE.md` | `settings/claude/CLAUDE.md` с Windows, только чтение | инструкции агентам (в git) |
+| `~/.config/orca`, `~/.orca` | `orca-config`, `orca-home` | сессии и рабочие пространства Orca, история терминалов, сопряжение, секреты orcad |
+| `~/.config/orca/orcad-artifacts` | `orcad-artifacts` | рантайм orcad (~150 МБ), скачивается с nodejs.org |
+| `~/.local/state/bash` | `bash-history` | история bash (`HISTFILE`) |
+| остальной `/home/agent` | `agent-home` | кэши npm, Maven, Gradle, Go, `~/.m2/settings.xml` |
+| PostgreSQL, Victoria*, Grafana | `postgres`, `victoria-metrics`, `victoria-logs`, `victoria-traces`, `grafana` | п. 10, 11 |
 
-Всё это переживает `up --force-recreate` и `down`. Named volume удаляются `down -v`, `podman volume rm` и
-пересозданием машины; `data/` на Windows — только вручную. Содержимое `/home/agent` из образа копируется в том
-только при первом создании: изменения домашней папки в новом образе в существующий том не попадут.
+Всё это переживает `up --force-recreate` и `down`. Тома удаляются `down -v`, `podman volume rm` и пересозданием
+машины — резервная копия: «Резервная копия томов» после быстрого старта. Содержимое `/home/agent` из образа
+копируется в том только при первом создании: изменения домашней папки в новом образе в существующий том не попадут.
 
 Агенты клонируют репозитории в `/repos`: так написано в `settings/claude/CLAUDE.md` (инструкции Claude Code,
 правятся без пересборки), `/repos` — рабочая папка контейнера, путь есть в `$REPOS_DIR`. Это правило для агентов,
 а не запрет: клонировать в другое место технически можно, но такие репозитории пропадут при пересоздании контейнера.
-Сам `/repos` — тоже 9p: регистр в именах файлов не различается (как в NTFS), установка зависимостей и сборки
-медленнее, чем на диске VM.
 
-`data/` подключается по 9p (п. 2): SQLite-базы Orca в режиме WAL и её unix-сокеты (`daemon/*.sock`, `o-*.sock`)
-на 9p могут работать ненадёжно. Если `orca serve` не стартует (`tmux attach -t orca`) или базы повреждаются —
-перенести `~/.config/orca` в named volume.
-
-```bat
-podman volume ls                                                  :: тома agent-box_*
-podman volume export agent-box_agent-home -o A:\backup\home.tar   :: резервная копия на Windows
-```
+Тома, созданные раньше с `userns_mode: keep-id`, принадлежат другому uid VM. При переходе на эту схему их нужно
+удалить один раз (данных в них нет — всё лежало в `data/`): `podman compose -f A:\orca\docker\compose.yaml down -v`.
 
 ### Как устроен контейнер
 
@@ -442,7 +508,7 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
   Без `TRACE_TO_LANGFUSE=true` хук сразу завершается; при недоступном Langfuse не мешает работе (fail-open, flush до 5 с);
 - домен сервера — в `settings/egress/allowlist.txt` (`cloud.langfuse.com`); SDK ходит через `HTTPS_PROXY`.
 
-Лог и состояние хука — `~/.claude/state/` (`data/claude/state` на Windows), подробный лог — `CC_LANGFUSE_DEBUG=true`.
+Лог и состояние хука — `~/.claude/state/` (том `claude`), подробный лог — `CC_LANGFUSE_DEBUG=true`.
 Ключи видны агентам в окружении контейнера: используйте отдельный проект Langfuse для агентов.
 
 `orca.yaml` (секция `scripts.setup`, которую Orca предлагает при создании worktree) для этого не подходит: он лежит
@@ -491,7 +557,7 @@ podman compose -f A:\orca\docker\compose.yaml --profile monitoring down
 
 **Grafana.** Источники данных создаются из `settings/monitoring/grafana/provisioning`: VictoriaMetrics
 (тип Prometheus), VictoriaLogs (плагин `victoriametrics-logs-datasource`), VictoriaTraces (тип Jaeger).
-БД не нужна: пользователи и дашборды — во встроенной SQLite в `data/monitoring/grafana`. Готовые дашборды
+БД не нужна: пользователи и дашборды — во встроенной SQLite в томе `grafana`. Готовые дашборды
 импортируются по ID (например, Node Exporter Full — `1860`); метки `job`/`instance` коллектор
 восстанавливает из OTLP-атрибутов, поэтому такие дашборды работают.
 
@@ -516,8 +582,8 @@ VictoriaLogs ставится при сборке образа (`images/monitori
 - squid-exporter работает в сетевом пространстве egress: cache manager доступен только с localhost
   (`http_access allow localhost manager` в `settings/egress/squid.conf`), порт 9301 публикуется у egress.
 
-Данные `data/monitoring` лежат на Windows (9p): VictoriaMetrics/Logs/Traces и SQLite Grafana на 9p медленнее
-и менее надёжны, чем на диске VM. Срок хранения — `METRICS_RETENTION` (30d), `LOGS_RETENTION` (14d),
+Данные — в томах `victoria-metrics`, `victoria-logs`, `victoria-traces`, `grafana` на диске VM.
+Срок хранения — `METRICS_RETENTION` (30d), `LOGS_RETENTION` (14d),
 `TRACES_RETENTION` (7d) в `.env`.
 
 ## 11. PostgreSQL 18
@@ -530,17 +596,11 @@ VictoriaLogs ставится при сборке образа (`images/monitori
 | Windows | `127.0.0.1:5432` (`POSTGRES_PORT` в `.env`) |
 
 - Пользователь, пароль и БД — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` в `.env`. Они применяются только
-  при первом запуске, когда `data/postgres` пуста; потом пароль меняется через `ALTER USER`. Переменные из `.env`
+  при первом запуске, когда том `postgres` пуст; потом пароль меняется через `ALTER USER`. Переменные из `.env`
   видны и в agent, поэтому агенты подключаются без отдельной настройки (`settings/claude/CLAUDE.md`).
-- Данные — `data/postgres` на Windows. В образе 18 `PGDATA=/var/lib/postgresql/18/docker`, поэтому монтируется
+- Данные — том `postgres`. В образе 18 `PGDATA=/var/lib/postgresql/18/docker`, поэтому монтируется
   родитель `/var/lib/postgresql`: обновление на 19 сможет положить данные рядом в `19/docker`.
-- Права: `userns_mode: keep-id` и `user: "1000:1000"`, как у agent: владелец папок с Windows (пользователь VM)
-  совпадает с процессом postgres. Образ поддерживает произвольный uid.
 - Нет выхода в интернет: только сеть `agent-internal`.
-
-`data/postgres` лежит на 9p: PostgreSQL требует права `0700` на каталог данных и надёжный `fsync`. Если сервер
-не стартует с `data directory ... has invalid permissions` или пишет ошибки ввода-вывода — перенести данные в
-named volume (`postgres-data:/var/lib/postgresql`).
 
 ```bat
 podman exec -it agent-box-postgres-1 psql -U postgres                 :: консоль
@@ -580,9 +640,10 @@ VM включена в Hyper-V без gvproxy (осталась от неуда�
 В `System32` пустой файл `podman` без расширения (обычно результат перенаправления `>` в консоли администратора).
 PowerShell находит его раньше `podman.exe`. Удалить от имени администратора: `del C:\Windows\System32\podman`.
 
-### `statfs /mnt/a/orca/docker/{settings,data}/...: no such file or directory` (или `input/output error`)
+### `statfs /mnt/a/orca/docker/settings/...: no such file or directory` (или `input/output error`)
 
-Папка `settings` или `data` не смонтирована в VM по пути, который ожидает compose (п. 2, параметры `-v`).
+Папка `settings` не смонтирована в VM по пути, который ожидает compose (п. 2, параметр `-v`), или на Windows
+не работает 9p-сервер (перезапустить машину; п. «Проблемы» про gvproxy).
 Та же ошибка с `settings/egress/squid.conf` — у egress (п. 8): без монтирования он не запускается.
 
 ### `java: command not found` / `orca: command not found` в контейнере
