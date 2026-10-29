@@ -100,7 +100,7 @@ mapfile -t FINAL_CONTEXTS < <(context_args "${WAVE1[@]}" "${WAVE2[@]}")
   --build-arg "COMMON_IMAGE=$PREFIX/common:latest" \
   -t "$IMAGE" -f images/Dockerfile . 2>&1 | tee "$LOG_DIR/final.log"
 
-# Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
+# Прокси для выхода agent в интернет (конфиг монтирует compose-win.yaml из settings/egress)
 echo "== $EGRESS_IMAGE"
 "$ENGINE" build "${COMMON_ARGS[@]}" --build-arg "COMMON_IMAGE=$PREFIX/common:latest" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
   >"$LOG_DIR/egress.log" 2>&1 || { tail -n 20 "$LOG_DIR/egress.log" >&2; exit 1; }

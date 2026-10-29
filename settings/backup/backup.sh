@@ -1,5 +1,5 @@
 #!/bin/bash
-# Резервная копия томов agent-box (сервис backup в compose.yaml).
+# Резервная копия томов agent-box (сервис backup в compose-win.yaml).
 # Раз в BACKUP_INTERVAL секунд: дамп PostgreSQL и отпечаток файлов томов; если с прошлой копии ничего
 # не изменилось — пропуск, иначе новая копия <дата-время>/ с <том>.tar и postgres.sql. Хранятся
 # последние BACKUP_KEEP копий. Тома подключены только для чтения в /volumes/<том>, копии — в /backup

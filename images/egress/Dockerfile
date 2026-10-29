@@ -2,7 +2,7 @@
 # Выход agent в интернет: squid пропускает только домены из allowlist.txt, остальное — 403 и запись в лог.
 # HTTPS не расшифровывается: домен берётся из CONNECT. Образ: localhost/agent-box-egress
 #
-# Конфиг в образ не входит: compose.yaml монтирует settings/egress/squid.conf и allowlist.txt
+# Конфиг в образ не входит: compose-win.yaml монтирует settings/egress/squid.conf и allowlist.txt
 # в /etc/squid. После правки — перезапустить контейнер egress, пересборка не нужна.
 
 ARG COMMON_IMAGE=localhost/agent-box/common:latest

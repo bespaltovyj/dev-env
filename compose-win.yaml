@@ -1,0 +1,413 @@
+# ================================================================ agent-box: Windows (Podman + Hyper-V)
+# Запуск agent-box на Windows. Изменяемые данные — в named volume на диске VM: папки Windows по 9p
+# не хранят владельца и права Linux (README.md, п. 2). Для Linux/macOS с данными в ./data — compose-unix.yaml.
+# Формат Compose Specification: работает с `docker compose` и `podman compose`.
+# Образ собирается заранее скриптом scripts/build/build.ps1 / build.sh.
+#
+#   cp .env.example .env                          # заполнить переменные
+#   podman compose -f compose-win.yaml up -d
+#   podman compose -f compose-win.yaml exec agent tmux new -A -s main   # подключиться (повторно — к той же сессии)
+#   podman compose -f compose-win.yaml down
+#
+# Мониторинг (профиль monitoring): otel-collector, VictoriaMetrics/Logs/Traces, vmauth (один VMUI),
+# Grafana, squid-exporter, node-exporter, cAdvisor. Без профиля эти сервисы не запускаются:
+#   podman compose -f compose-win.yaml --profile monitoring up -d   | COMPOSE_PROFILES=monitoring в .env
+#
+# Резервные копии томов (профиль backup, блок сервиса закомментирован — см. «backup» ниже):
+#   podman compose -f compose-win.yaml --profile backup up -d
+#
+# .env используется дважды:
+#   1. compose подставляет из него ${...} в этот файл (AGENT_IMAGE, AGENT_MEMORY, ...);
+#   2. env_file передаёт все его переменные внутрь контейнера.
+
+name: agent-box
+
+services:
+  agent:
+    image: ${AGENT_IMAGE:-localhost/agent-box:latest}
+    pull_policy: never
+    hostname: agent-box
+    stdin_open: true
+    tty: true
+    # Контейнер живёт постоянно, работа идёт через `exec` и tmux-сессии
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+    # ============================================================ переменные окружения
+    env_file:
+      - path: .env
+        required: false
+    # Выход в интернет только через egress (environment важнее .env).
+    # Maven/Gradle: scripts/build/entrypoint.sh пишет прокси в ~/.m2 и ~/.gradle из HTTPS_PROXY
+    environment:
+      HTTP_PROXY: http://egress:3128
+      HTTPS_PROXY: http://egress:3128
+      http_proxy: http://egress:3128
+      https_proxy: http://egress:3128
+      # otel-collector (профиль monitoring) — в той же сети agent-internal, без прокси
+      NO_PROXY: localhost,127.0.0.1,::1,otel-collector
+      no_proxy: localhost,127.0.0.1,::1,otel-collector
+      # fetch в Node.js без этого прокси не использует
+      NODE_USE_ENV_PROXY: "1"
+      # Весь конфиг Claude Code, включая .claude.json, — в томе claude
+      CLAUDE_CONFIG_DIR: /home/agent/.claude
+      # История bash — в томе bash-history
+      HISTFILE: /home/agent/.local/state/bash/history
+
+    # ============================================================ сеть
+    # agent-internal без выхода наружу и внешнего DNS: интернет только через egress.
+    # orca-ide serve (scripts/build/entrypoint.sh): только localhost, Orca на Windows подключается к 127.0.0.1.
+    # Не 6768: его на Windows занимает рантайм десктопного Orca
+    networks:
+      - agent-internal
+    ports:
+      - "127.0.0.1:${ORCA_PORT:-6769}:${ORCA_PORT:-6769}"
+    depends_on:
+      - egress
+
+    # ============================================================ данные
+    # Все изменяемые данные — в named volume на диске VM (обычная файловая система Linux).
+    # Удаляются только `down -v`, `podman volume rm` и пересозданием машины; резервная копия —
+    # podman volume export (README.md, «Резервная копия томов»).
+    # Podman отдаёт новый том пользователю контейнера (agent), userns keep-id не нужен:
+    # uid 1000 в контейнере — непривилегированный subuid в VM, а не пользователь, владеющий podman
+    volumes:
+      # Кэши npm/Maven/Gradle/Go и прочий /home/agent
+      - agent-home:/home/agent
+      # Git-репозитории всех агентов
+      - repos:/repos
+      # Не работает в Podman на Hyper-V: data/ подключается в VM по 9p, а 9p-сервер Podman не хранит
+      # владельца и права Linux. Внутри контейнера всё принадлежит nobody (65534) с правами 777,
+      # chmod/chown дают «Operation not permitted», блокировок файлов нет (ENOSYS):
+      # git init/clone падают на chmod .git/config.lock, Orca — на проверке владельца ~/.config/orca,
+      # PostgreSQL — на chmod каталога данных.
+      # - ./data/repos:/repos
+      # Worktree Orca (workspaceDir по умолчанию ~/orca/workspaces)
+      - orca-worktrees:/home/agent/orca/workspaces
+      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json;
+      # инструкции агентам — статический settings/claude/CLAUDE.md, только чтение
+      - claude:/home/agent/.claude
+      - ./settings/claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
+      # Orca: сессии, рабочие пространства, история терминалов, сопряжение, секреты
+      - orca-config:/home/agent/.config/orca
+      - orca-home:/home/agent/.orca
+      # Рантайм orcad (~150 МБ, скачивается с nodejs.org) — кэш
+      - orcad-artifacts:/home/agent/.config/orca/orcad-artifacts
+      # История bash (HISTFILE)
+      - bash-history:/home/agent/.local/state/bash
+
+    # ============================================================ ограничения
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${AGENT_MEMORY:-4g}
+    cpus: ${AGENT_CPUS:-2}
+    pids_limit: ${AGENT_PIDS:-1024}
+
+  # ============================================================== egress
+  # squid: пропускает в интернет только домены из settings/egress/allowlist.txt.
+  # Конфиг монтируется с хоста: после правки — podman restart agent-box-egress-1.
+  # Лог запросов: podman logs agent-box-egress-1
+  egress:
+    image: ${EGRESS_IMAGE:-localhost/agent-box-egress:latest}
+    pull_policy: never
+    restart: unless-stopped
+    networks:
+      - agent-internal
+      - outside
+    # squid-exporter работает в сетевом пространстве egress, поэтому его порт публикуется здесь
+    ports:
+      - "127.0.0.1:9301:9301"
+    # Файлами, а не папкой: в /etc/squid остаются mime.conf и conf.d из пакета
+    volumes:
+      - ./settings/egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./settings/egress/allowlist.txt:/etc/squid/allowlist.txt:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 256
+
+  # ============================================================== postgres
+  # PostgreSQL 18 для агентов: из agent — postgres:5432, с Windows — 127.0.0.1:5432.
+  # Данные — том postgres (в образе 18 PGDATA=/var/lib/postgresql/18/docker, монтируется родитель).
+  # Пароль и пользователь задаются только при первом запуске (пустой том)
+  postgres:
+    image: docker.io/library/postgres:18.6-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - postgres:/var/lib/postgresql
+    networks:
+      - agent-internal
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${POSTGRES_MEMORY:-512m}
+
+  # ============================================================== backup
+  # Резервные копии томов в data/backup на Windows (settings/backup/backup.sh): раз в час, только если
+  # данные изменились, последние 2 копии — <том>.tar и дамп postgres.sql. Образ postgres — ради pg_dumpall
+  # той же версии, что и сервер. Кэши (agent-home, orcad-artifacts) и Victoria* (временные ряды с
+  # ограниченным сроком хранения, меняются постоянно) не копируются.
+  # Лог: podman logs agent-box-backup-1
+  # Профиль backup, блок выключен: чтобы включить — раскомментировать и запускать с --profile backup
+  # (или COMPOSE_PROFILES=backup в .env; с мониторингом — COMPOSE_PROFILES=monitoring,backup)
+  # backup:
+  #   image: docker.io/library/postgres:18.6-trixie
+  #   profiles: [backup]
+  #   restart: unless-stopped
+  #   entrypoint: ["/bin/bash", "/opt/backup/backup.sh"]
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  #     PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  #     BACKUP_INTERVAL: ${BACKUP_INTERVAL:-3600}
+  #     BACKUP_KEEP: ${BACKUP_KEEP:-2}
+  #   volumes:
+  #     - ./settings/backup/backup.sh:/opt/backup/backup.sh:ro
+  #     # Запись готовых файлов на 9p работает (не работают права, владелец и блокировки — им tar не нужен)
+  #     - ./data/backup:/backup
+  #     - repos:/volumes/repos:ro
+  #     - orca-worktrees:/volumes/orca-worktrees:ro
+  #     - claude:/volumes/claude:ro
+  #     - orca-config:/volumes/orca-config:ro
+  #     - orca-home:/volumes/orca-home:ro
+  #     - bash-history:/volumes/bash-history:ro
+  #     - grafana:/volumes/grafana:ro
+  #   # Только до postgres, без выхода в интернет
+  #   networks:
+  #     - agent-internal
+  #   depends_on:
+  #     - postgres
+  #   # DAC_READ_SEARCH: читать файлы других пользователей в томах (секреты Orca и Claude с правами 600)
+  #   cap_drop:
+  #     - ALL
+  #   cap_add:
+  #     - DAC_READ_SEARCH
+  #   security_opt:
+  #     - no-new-privileges:true
+  #   mem_limit: 256m
+
+  # ============================================================== мониторинг (профиль monitoring)
+  # Все данные идут через otel-collector, хранятся в Victoria* (named volume).
+  # Все порты только на 127.0.0.1.
+
+  # Приём: OTLP (4317 gRPC, 4318 HTTP), Prometheus remote write (9090), scrape экспортеров и стека.
+  # В agent-internal: приложения в agent шлют телеметрию на otel-collector:4318 напрямую
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.164.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./settings/monitoring/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    networks:
+      - monitoring
+      - agent-internal
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:8888:8888"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 512m
+
+  # Сеть хоста VM: забирает метрики node-exporter и отдаёт их в otel-collector (127.0.0.1:4318)
+  otel-agent:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.164.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./settings/monitoring/otel-agent.yaml:/etc/otelcol/config.yaml:ro
+    network_mode: host
+    depends_on:
+      - otel-collector
+      - node-exporter
+    mem_limit: 128m
+
+  # Метрики самой VM (Fedora CoreOS): сеть и PID хоста, корень VM только для чтения.
+  # Порт 9100 слушает в сети VM (127.0.0.1) — на Windows не пробрасывается, читает otel-agent
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
+    network_mode: host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    mem_limit: 128m
+
+  # Метрики контейнеров (CPU, память, сеть, диск) по cgroups. Podman rootless: корень cgroup недоступен,
+  # поэтому вместо него — поддерево пользователя VM core (uid 1000), где живут все его контейнеры;
+  # SELinux запрещает inotify на cgroups из контейнера — метка отключена только здесь.
+  # Сокет podman нужен для имён контейнеров: он даёт полный доступ к podman пользователя core,
+  # поэтому у cAdvisor только внутренняя сеть monitoring
+  cadvisor:
+    image: ghcr.io/google/cadvisor:v0.60.6
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - --podman=unix:///var/run/podman/podman.sock
+      - --docker_only=false
+      - --housekeeping_interval=30s
+      - --store_container_labels=false
+    security_opt:
+      - label=disable
+    volumes:
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+      - /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service:/sys/fs/cgroup:ro
+      - /dev/disk:/dev/disk:ro
+      - /run/user/1000/podman/podman.sock:/var/run/podman/podman.sock:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8080:8080"
+    mem_limit: 256m
+
+  # Счётчики squid из cache manager; в сетевом пространстве egress (доступ manager только с localhost)
+  squid-exporter:
+    image: docker.io/boynux/squid-exporter:v1.13.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      SQUID_HOSTNAME: localhost
+      SQUID_PORT: "3128"
+      SQUID_EXPORTER_LISTEN: ":9301"
+    network_mode: service:egress
+    depends_on:
+      - egress
+    mem_limit: 64m
+
+  victoria-metrics:
+    image: docker.io/victoriametrics/victoria-metrics:v1.155.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${METRICS_RETENTION:-30d}
+    volumes:
+      - victoria-metrics:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8428:8428"
+    mem_limit: 1g
+
+  victoria-logs:
+    image: docker.io/victoriametrics/victoria-logs:v1.53.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${LOGS_RETENTION:-14d}
+    volumes:
+      - victoria-logs:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:9428:9428"
+    mem_limit: 512m
+
+  victoria-traces:
+    image: docker.io/victoriametrics/victoria-traces:v0.12.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${TRACES_RETENTION:-7d}
+    volumes:
+      - victoria-traces:/storage
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:10428:10428"
+    mem_limit: 512m
+
+  # Один вход во все VMUI: /vmui/, /logs/select/vmui/, /traces/select/vmui/ (settings/monitoring/vmauth.yaml)
+  vmauth:
+    image: docker.io/victoriametrics/vmauth:v1.155.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: ["-auth.config=/etc/vmauth/config.yaml"]
+    volumes:
+      - ./settings/monitoring/vmauth.yaml:/etc/vmauth/config.yaml:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:8427:8427"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 64m
+
+  # Образ собирают scripts/build (images/monitoring/grafana.Dockerfile): плагин VictoriaLogs ставится
+  # при сборке, в работе выхода в интернет нет. БД не нужна: пользователи и дашборды — во встроенной
+  # SQLite (том grafana), источники данных — settings/monitoring/grafana/provisioning.
+  grafana:
+    image: ${GRAFANA_IMAGE:-localhost/agent-box-grafana:latest}
+    pull_policy: never
+    profiles: [monitoring]
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Без обращений в интернет: статистика, проверка обновлений, новости
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./settings/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks: [monitoring]
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - victoria-metrics
+      - victoria-logs
+      - victoria-traces
+    mem_limit: 512m
+
+networks:
+  # Без маршрута наружу и внешнего DNS
+  agent-internal:
+    internal: true
+  # Обычная сеть с выходом в интернет — только у egress
+  outside: {}
+  # Стек мониторинга, без выхода в интернет (порты на 127.0.0.1 публикуются и во внутреннюю сеть)
+  monitoring:
+    internal: true
+
+# Named volume на диске VM. Имена в podman: agent-box_<имя> (podman volume ls).
+# Резервная копия: podman volume export (README.md, «Резервная копия томов»)
+volumes:
+  agent-home: {}
+  repos: {}
+  orca-worktrees: {}
+  claude: {}
+  orca-config: {}
+  orca-home: {}
+  orcad-artifacts: {}
+  bash-history: {}
+  postgres: {}
+  # Профиль monitoring
+  victoria-metrics: {}
+  victoria-logs: {}
+  victoria-traces: {}
+  grafana: {}

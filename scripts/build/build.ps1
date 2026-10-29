@@ -107,7 +107,7 @@ $argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('--bu
 & $EnginePath @argv 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $LogRoot 'final.log')
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-# Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
+# Прокси для выхода agent в интернет (конфиг монтирует compose-win.yaml из settings/egress)
 Write-Host "== $EgressImage"
 $argv = @('build') + $CommonArgs + @('--build-arg', "COMMON_IMAGE=$Prefix/common:latest", '-t', $EgressImage, '-f', 'images/egress/Dockerfile', 'images/egress')
 $code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'egress.log')

@@ -11,7 +11,7 @@
 │ │                                                         │ │          │                                                              │
 │ │ 1. sudo podman machine start                            │ │          │                                                              │
 │ │ 2. .\scripts\build\build.ps1 или build.sh               │ │          │ ┌─ контейнер agent-box-agent-1 ────────────────────────────┐ │
-│ │ 3. podman compose -f compose.yaml up -d --force-recreate│ │          │ │ cap_drop ALL · no-new-privileges                         │ │
+│ │ 3. podman compose -f compose-win.yaml up -d --force-recreate│ │          │ │ cap_drop ALL · no-new-privileges                         │ │
 │ │                                                         │ │          │ │ сеть agent-internal: нет выхода наружу и DNS             │ │
 │ │ сокет %TEMP%\podman\                                    │ │          │ │ PID 1  tini                                              │ │
 │ │   agents-api.sock                                       │ │          │ │ └─ agent-entrypoint (entrypoint.sh)                      │ │
@@ -47,7 +47,9 @@ Orca на хосте подключается к `orca serve` в контейн�
 ## Структура репозитория
 
 ```
-compose.yaml, .env.example          запуск (п. 6)
+compose-win.yaml                    запуск на Windows (Podman + Hyper-V): данные в named volume (п. 6)
+compose-unix.yaml                   запуск на Linux/macOS: данные в data/ («Linux и macOS»)
+.env.example                        переменные для compose (п. 6)
 settings/                           только статические настройки, безопасные для git
 ├── apt/debian.sources              источники apt (только https), встраивается в образ common
 ├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
@@ -55,7 +57,7 @@ settings/                           только статические наст
 ├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
 ├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час («Резервная копия томов»)
 └── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
-data/backup/                        не в git: резервные копии томов, их делает сервис backup («Резервная копия томов»).
+data/backup/                        не в git: резервные копии томов, сервис backup, профиль backup («Резервная копия томов»).
                                     Сами данные контейнеров — в named volume на диске VM (п. 6)
 images/
 ├── Dockerfile                      итоговый образ localhost/agent-box
@@ -76,57 +78,87 @@ scripts/build/
 
 ## Быстрый старт
 
-Все команды по порядку. Подробности — в разделах 1–11 ниже. Пути — для проекта в `A:\orca\docker`.
+Все команды по порядку, подробности — в разделах 1–11 ниже. Путь к проекту задаётся один раз в переменной
+окружения `AGENT_BOX_DIR` (только для текущего окна консоли), остальные пути строятся от неё.
+Номер шага перед командой не вводить. Блоки для cmd и PowerShell не смешивать: в приглашении cmd — `C:\...>`,
+в PowerShell — `PS C:\...>` (из PowerShell в cmd можно перейти командой `cmd`, обратно — `exit`).
 
-**1. Создать и запустить машину** — PowerShell от имени администратора (п. 2, 3):
+**Windows (PowerShell в режиме администратора)**
 
 ```powershell
-podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro -v A:\orca\docker\data:/mnt/a/orca/docker/data
-Set-VM -Name agents -AutomaticStartAction Nothing
-podman machine start agents
-podman system connection default agents
+1.  $env:AGENT_BOX_DIR = 'A:\orca\docker'   # общий путь к проекту (только для этого окна)
+2.  $env:VM_DIR = '/mnt/a/orca/docker'   # тот же путь внутри VM: буква диска строчная, косые черты прямые
+3.  Set-Location $env:AGENT_BOX_DIR   # перейти в папку проекта
+4.  Set-ExecutionPolicy -Scope Process RemoteSigned   # активируем возможность выполнять скрипты (только для этого окна)
+5.  New-Item -ItemType Directory -Force data | Out-Null   # папка data должна существовать до init
+6.  podman machine init agents --provider hyperv --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v "$env:AGENT_BOX_DIR\settings:$env:VM_DIR/settings:ro" -v "$env:AGENT_BOX_DIR\data:$env:VM_DIR/data"   # создание машины (п. 2)
+7.  Set-VM -Name agents -AutomaticStartAction Nothing   # VM не стартует сама при загрузке Windows (п. 2)
+8.  podman machine start agents   # запуск машины
+9.  .\scripts\build\build.ps1   # сборка образов
+10. Copy-Item .env.example .env   # инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
+11. podman compose -f "$env:AGENT_BOX_DIR\compose-win.yaml" up -d --force-recreate   # запуск контейнеров (мониторинг: --profile monitoring)
+12. podman exec -it agent-box-agent-1 tmux attach -t orca   # подключение к orca serve для копирования кода orca://pair?code=...
+13. Ctrl+B, затем d   # выход из tmux-сессии; код добавить в десктопном Orca как удалённое окружение
 ```
 
-**2. Настройки и сборка образов** — обычный PowerShell, без прав администратора (п. 1, 5):
+Если PowerShell вместо запуска `podman` предлагает выбрать приложение — в `C:\Windows\System32` лежит пустой файл
+`podman` («Проблемы»): удалить его или писать `podman.exe`.
 
-```powershell
-Set-Location A:\orca\docker
-Copy-Item .env.example .env                                   # заполнить: POSTGRES_PASSWORD, ключи и т.д.
-New-Item -ItemType Directory -Force data\backup | Out-Null    # сюда сервис backup пишет резервные копии
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass    # разрешить .ps1 только в этом окне
-.\scripts\build\build.ps1
+**Windows (cmd в режиме администратора)** — комментарий после `& rem` вводить можно, cmd его пропустит.
+
+```bat
+1.  set "AGENT_BOX_DIR=A:\orca\docker"   & rem общий путь к проекту (только для этого окна)
+2.  set "VM_DIR=/mnt/a/orca/docker"   & rem тот же путь внутри VM: буква диска строчная, косые черты прямые
+3.  cd /d %AGENT_BOX_DIR%   & rem перейти в папку проекта
+4.  if not exist data mkdir data   & rem папка data должна существовать до init
+5.  podman machine init agents --provider hyperv --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v "%AGENT_BOX_DIR%\settings:%VM_DIR%/settings:ro" -v "%AGENT_BOX_DIR%\data:%VM_DIR%/data"   & rem создание машины (п. 2)
+6.  powershell -NoProfile -Command "Set-VM -Name agents -AutomaticStartAction Nothing"   & rem VM не стартует сама при загрузке Windows (п. 2)
+7.  podman machine start agents   & rem запуск машины
+8.  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build\build.ps1   & rem сборка образов (выполнение .ps1 разрешено только для этого запуска)
+9.  copy .env.example .env   & rem инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
+10. podman compose -f "%AGENT_BOX_DIR%\compose-win.yaml" up -d --force-recreate   & rem запуск контейнеров (мониторинг: --profile monitoring)
+11. podman exec -it agent-box-agent-1 tmux attach -t orca   & rem подключение к orca serve для копирования кода orca://pair?code=...
+12. Ctrl+B, затем d   & rem выход из tmux-сессии; код добавить в десктопном Orca как удалённое окружение
 ```
 
-**3. Запуск контейнеров** — от имени администратора (п. 6):
+**Linux / macOS**
 
-```powershell
-podman compose -f A:\orca\docker\compose.yaml up -d
-podman compose -f A:\orca\docker\compose.yaml --profile monitoring up -d    # то же вместе с мониторингом (п. 10)
+```bash
+1.  Открыть терминал   # права root не нужны: rootless podman
+2.  export AGENT_BOX_DIR=~/orca/docker   # общий путь к проекту (только для этого терминала)
+3.  cd "$AGENT_BOX_DIR"   # перейти в папку проекта
+4.  podman machine init --cpus 6 --memory 8192 --disk-size 100 -v "$AGENT_BOX_DIR:$AGENT_BOX_DIR"   # только macOS: создание машины, папка проекта видна VM
+5.  podman machine start   # только macOS: запуск машины
+6.  mkdir -p data/{repos,orca-worktrees,claude,orca/config,orca/home,bash,postgres}   # папки для данных контейнеров (мониторинг — ещё data/monitoring/*)
+7.  ./scripts/build/build.sh   # сборка образов
+8.  cp .env.example .env   # инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
+9.  podman compose -f "$AGENT_BOX_DIR/compose-unix.yaml" up -d --force-recreate   # запуск контейнеров (мониторинг: --profile monitoring)
+10. podman exec -it agent-box-agent-1 tmux attach -t orca   # подключение к orca serve для копирования кода orca://pair?code=...
+11. Ctrl+B, затем d   # выход из tmux-сессии; код добавить в десктопном Orca как удалённое окружение
 ```
 
-**4. Orca в режиме serve** (п. 7). `orca-ide serve` запускается сам при старте контейнера в tmux-сессии `orca`
-(если в `.env` не задано `ORCA_SERVE=0`). Код сопряжения — без прав администратора:
+Код сопряжения новый при каждом запуске сервера. Если `orca serve` не запущен (`ORCA_SERVE=0` в `.env` или упал):
 
-```powershell
-podman exec -it agent-box-agent-1 tmux attach -t orca
-```
-
-Скопировать `orca://pair?code=...`, отключиться `Ctrl+B`, `D`, в десктопном Orca добавить удалённое окружение по
-этому коду. Если сервер не запущен (`ORCA_SERVE=0` или упал):
-
-```powershell
+```bat
 podman exec agent-box-agent-1 tmux kill-session -t orca
 podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --pairing-address ws://127.0.0.1:6769"
 ```
 
-**Каждый следующий раз** — от имени администратора: `podman machine start agents`, затем
-`podman compose -f A:\orca\docker\compose.yaml up -d`; код сопряжения новый при каждом запуске сервера.
+**Каждый следующий раз** на Windows — от имени администратора: `podman machine start agents`, затем
+`podman compose -f A:\orca\docker\compose-win.yaml up -d`.
 
 ## Резервная копия томов
 
 Все данные контейнеров — в named volume на диске VM: с Windows они не видны и удаляются вместе с машиной
-(`podman machine rm`). Копии на Windows делает сервис `backup` (`settings/backup/backup.sh`), он запускается
-вместе с остальными:
+(`podman machine rm`). Копии на Windows делает сервис `backup` (`settings/backup/backup.sh`) из профиля `backup`.
+**По умолчанию он выключен**: блок сервиса в `compose-win.yaml` закомментирован. Чтобы включить —
+раскомментировать блок `backup` и запускать с профилем (или `COMPOSE_PROFILES=backup` в `.env`):
+
+```bat
+podman compose -f A:\orca\docker\compose-win.yaml --profile backup up -d
+```
+
+Что делает сервис:
 
 - раз в час (`BACKUP_INTERVAL` в `.env`, секунды) снимает дамп PostgreSQL (`pg_dumpall`) и отпечаток всех файлов
   томов (путь, размер, время изменения, права); если с прошлой копии ничего не изменилось — пропускает;
@@ -227,13 +259,13 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # только те
 PowerShell **от имени администратора** (`init` пишет в реестр `HKLM`):
 
 ```powershell
-podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro -v A:\orca\docker\data:/mnt/a/orca/docker/data
+podman machine init agents --provider hyperv --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro -v A:\orca\docker\data:/mnt/a/orca/docker/data
 ```
 
 | Параметр | Значение |
 |---|---|
 | `--provider hyperv` | Hyper-V только для этой машины, провайдер по умолчанию не меняется |
-| `--image` | Fedora CoreOS от команды Podman, версия под клиент 6.1 |
+| без `--image` | образ по умолчанию — Fedora CoreOS от команды Podman (`quay.io/podman/machine-os:<версия клиента>`). Только так скачанный образ остаётся в кэше `%XDG_DATA_HOME%\containers\podman\machine\hyperv\cache` и повторный `init` его не качает (пока не выйдет новая сборка). С явным `--image docker://...:6.1` Podman удаляет образ сразу после создания машины |
 | `--cpus 6` | 6 виртуальных CPU |
 | `--memory 8192` | 8 ГБ памяти |
 | `--swap 0` | без swap |
@@ -241,7 +273,7 @@ podman machine init agents --provider hyperv --image docker://quay.io/podman/mac
 | `-v ...\settings:...:ro` | статические настройки, VM и контейнеры видят их только для чтения |
 | `-v ...\data` | только для резервных копий: сервис `backup` пишет архивы томов в `data\backup` |
 
-Других папок Windows машина не видит: `compose.yaml` монтирует с Windows только `./settings/...` и
+Других папок Windows машина не видит: `compose-win.yaml` монтирует с Windows только `./settings/...` и
 `./data/backup` (сервис `backup`), все изменяемые данные — в named volume на диске VM (п. 6). Образы собираются
 без монтирования: контекст сборки передаётся через API. Цель `-v` обязана быть `/mnt/<диск>/<путь>` той же папки:
 compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings`. Если проект лежит в другом месте,
@@ -320,15 +352,15 @@ Copy-Item .env.example .env       # заполнить переменные
 ## 6. Запуск контейнера
 
 От имени администратора. Команды работают из любой папки и в `cmd`, и в PowerShell: `-f` задаёт файл,
-а `.env` и относительные пути берутся из папки `compose.yaml`.
+а `.env` и относительные пути берутся из папки `compose-win.yaml`.
 
 ```bat
-podman compose -f A:\orca\docker\compose.yaml up -d                              # поднять
-podman compose -f A:\orca\docker\compose.yaml up -d --force-recreate             # пересоздать (новый образ, порты)
-podman compose -f A:\orca\docker\compose.yaml ps                                 # статус
-podman compose -f A:\orca\docker\compose.yaml logs --tail 100                    # логи
-podman compose -f A:\orca\docker\compose.yaml exec agent tmux new -A -s main     # подключиться
-podman compose -f A:\orca\docker\compose.yaml down                               # остановить
+podman compose -f A:\orca\docker\compose-win.yaml up -d                              # поднять
+podman compose -f A:\orca\docker\compose-win.yaml up -d --force-recreate             # пересоздать (новый образ, порты)
+podman compose -f A:\orca\docker\compose-win.yaml ps                                 # статус
+podman compose -f A:\orca\docker\compose-win.yaml logs --tail 100                    # логи
+podman compose -f A:\orca\docker\compose-win.yaml exec agent tmux new -A -s main     # подключиться
+podman compose -f A:\orca\docker\compose-win.yaml down                               # остановить
 ```
 
 Без прав администратора то же через обычный podman: `podman exec -it agent-box-agent-1 tmux new -A -s main`.
@@ -364,14 +396,14 @@ subuid в VM, а не пользователь `core`, которому прин
 а не запрет: клонировать в другое место технически можно, но такие репозитории пропадут при пересоздании контейнера.
 
 Тома, созданные раньше с `userns_mode: keep-id`, принадлежат другому uid VM. При переходе на эту схему их нужно
-удалить один раз (данных в них нет — всё лежало в `data/`): `podman compose -f A:\orca\docker\compose.yaml down -v`.
+удалить один раз (данных в них нет — всё лежало в `data/`): `podman compose -f A:\orca\docker\compose-win.yaml down -v`.
 
 ### Как устроен контейнер
 
 ```
 tini                                  PID 1: передаёт сигналы, убирает зомби-процессы
 └── agent-entrypoint                  scripts/build/entrypoint.sh: запускает tmux-сессию orca, затем exec основной команды
-    └── sleep infinity                command из compose.yaml: держит контейнер запущенным
+    └── sleep infinity                command из compose-win.yaml: держит контейнер запущенным
 tmux: orca  — orca-ide serve          (п. 7)
 tmux: main  — ваша работа             (через exec)
 ```
@@ -384,7 +416,7 @@ tmux: main  — ваша работа             (через exec)
 | Часть | Значение |
 |---|---|
 | `podman compose exec` | выполнить команду в уже запущенном контейнере сервиса |
-| `agent` | имя сервиса из `compose.yaml` (`services: agent`) |
+| `agent` | имя сервиса из `compose-win.yaml` (`services: agent`) |
 | `tmux new` | создать tmux-сессию |
 | `-A` | если сессия уже есть — подключиться к ней, а не создавать новую |
 | `-s main` | имя сессии `main` |
@@ -406,7 +438,7 @@ orca-ide serve --port 6769 --pairing-address ws://127.0.0.1:6769
 ```
 
 Окно — десктопный Orca на Windows, агенты и терминалы — в контейнере. Порт пробрасывается только на
-`127.0.0.1` (`compose.yaml`, секция «сеть»). Порт **6769**, а не 6768 по умолчанию: 6768 на Windows занимает
+`127.0.0.1` (`compose-win.yaml`, секция «сеть»). Порт **6769**, а не 6768 по умолчанию: 6768 на Windows занимает
 рантайм десктопного Orca, и с ним compose падает с `listen tcp 127.0.0.1:6768: bind: Only one usage of each socket address`.
 
 Подключение:
@@ -416,7 +448,11 @@ orca-ide serve --port 6769 --pairing-address ws://127.0.0.1:6769
    podman exec -it agent-box-agent-1 tmux attach -t orca
    ```
    Скопировать `orca://pair?code=...`, отключиться `Ctrl+B`, `D`. Код новый при каждом запуске сервера.
-2. В десктопном Orca добавить удалённое окружение по этому коду.
+2. В десктопном Orca добавить удалённое окружение по этому коду. Orca предупредит «This link points back to this
+   device … 127.0.0.1:6769»: адрес loopback она считает ошибкой, если сервер на другом компьютере. Здесь это
+   нормально — порт контейнера проброшен на `127.0.0.1` Windows (как SSH-туннель), поэтому включить опцию под
+   предупреждением про SSH-туннель и продолжить. Адрес LAN/Tailscale не нужен: порт специально открыт только на
+   `127.0.0.1`.
 
 Управление сессией:
 
@@ -455,7 +491,7 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
   `curl --noproxy '*'`, ssh, произвольные TCP-порты не работают. `egress` подключён к ней и к сети `outside`.
 - **HTTPS не расшифровывается**: squid видит домен из `CONNECT`, сертификаты не подменяются.
   Разрешены порты 80 и 443, `CONNECT` — только на 443. `git` — только по https, не по ssh.
-- **Прокси в agent** задаёт `compose.yaml` (`environment`, важнее `.env`): `HTTP(S)_PROXY`, `NO_PROXY`,
+- **Прокси в agent** задаёт `compose-win.yaml` (`environment`, важнее `.env`): `HTTP(S)_PROXY`, `NO_PROXY`,
   `NODE_USE_ENV_PROXY=1` (без него `fetch` в Node.js прокси не использует). Maven и Gradle переменные окружения
   не читают: `scripts/build/entrypoint.sh` при старте создаёт `~/.m2/settings.xml` и `~/.gradle/gradle.properties` с прокси,
   если этих файлов ещё нет.
@@ -469,7 +505,7 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
 
 ### Изменить список
 
-`settings/egress/squid.conf` и `allowlist.txt` не входят в образ: `compose.yaml` монтирует их в egress
+`settings/egress/squid.conf` и `allowlist.txt` не входят в образ: `compose-win.yaml` монтирует их в egress
 только для чтения. Для этого папка `settings` должна быть смонтирована в машину (п. 2, `-v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro`),
 иначе egress не создаётся (`statfs ... settings/egress/...`) и у agent нет интернета.
 
@@ -517,12 +553,12 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
 
 ## 10. Мониторинг: профиль monitoring
 
-Сервисы мониторинга описаны в `compose.yaml` с `profiles: [monitoring]` и без профиля не запускаются.
+Сервисы мониторинга описаны в `compose-win.yaml` с `profiles: [monitoring]` и без профиля не запускаются.
 От имени администратора:
 
 ```bat
-podman compose -f A:\orca\docker\compose.yaml --profile monitoring up -d
-podman compose -f A:\orca\docker\compose.yaml --profile monitoring down
+podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring up -d
+podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
 ```
 
 Чтобы не писать `--profile` каждый раз — `COMPOSE_PROFILES=monitoring` в `.env`.
@@ -606,6 +642,38 @@ VictoriaLogs ставится при сборке образа (`images/monitori
 podman exec -it agent-box-postgres-1 psql -U postgres                 :: консоль
 podman exec agent-box-postgres-1 pg_dumpall -U postgres > dump.sql    :: резервная копия на Windows
 ```
+
+## Linux и macOS
+
+`compose-unix.yaml` — тот же набор сервисов, но изменяемые данные лежат в папках `./data` на хосте, как на
+Windows задумывалось изначально. Это работает там, где папки хоста — обычная файловая система для контейнера:
+Linux (rootless podman без VM) и, с оговорками, macOS (podman machine, virtiofs). Отличия от `compose-win.yaml`:
+
+| | `compose-win.yaml` | `compose-unix.yaml` |
+|---|---|---|
+| `repos`, worktree Orca, `~/.claude`, Orca, история bash | named volume | `data/repos`, `data/orca-worktrees`, `data/claude`, `data/orca/{config,home}`, `data/bash` |
+| PostgreSQL, Victoria*, Grafana | named volume | `data/postgres`, `data/monitoring/*` |
+| Пользователь | uid 1000 контейнера = subuid в VM | `userns_mode: keep-id:uid=1000,gid=1000`: ваш пользователь хоста = uid 1000 в контейнерах, файлы в `data/` — ваши |
+| Резервная копия | сервис `backup` (профиль, выключен) | не нужна отдельно: копировать `data/` обычными средствами, PostgreSQL — `pg_dumpall` |
+| Кэши (`agent-home`, `orcad-artifacts`) | named volume | named volume |
+
+```bash
+./scripts/build/build.sh
+cp .env.example .env
+mkdir -p data/{repos,orca-worktrees,claude,orca/config,orca/home,bash,postgres}
+mkdir -p data/monitoring/{victoria-metrics,victoria-logs,victoria-traces,grafana}   # для профиля monitoring
+podman compose -f compose-unix.yaml up -d
+```
+
+Оговорки:
+
+- `keep-id` есть только в rootless podman; с `docker compose` строки `userns_mode`/`user` нужно убрать и
+  выдать `data/` владельца uid 1000 (`sudo chown -R 1000:1000 data`).
+- macOS: virtiofs не даёт сменить владельца на произвольный uid и по умолчанию не различает регистр в именах —
+  если PostgreSQL или Grafana не стартуют, перенести их данные в named volume, как в `compose-win.yaml`.
+- cAdvisor (профиль monitoring) ждёт пользователя хоста с uid 1000: пути `/run/user/1000/...` и
+  `user-1000.slice` в `compose-unix.yaml` поменять под свой uid (`id -u`).
+- На Linux и macOS этот файл не проверялся — только синтаксис (`docker compose config`).
 
 ## Проблемы
 ### `machine is not listening on ssh port`, а `machine list` показывает `Currently running`

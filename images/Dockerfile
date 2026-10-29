@@ -126,7 +126,7 @@ RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
  && rm -rf /tmp/check
 
 # ================================================================ пользователь
-# Точки монтирования томов compose.yaml создаются заранее: иначе podman создаст их и промежуточные
+# Точки монтирования томов compose-win.yaml создаются заранее: иначе podman создаст их и промежуточные
 # папки (~/.config, ~/.local/state) от root внутри тома agent-home
 RUN groupadd --gid "${USER_GID}" agent \
  && useradd --uid "${USER_UID}" --gid agent --create-home --shell /bin/bash agent \
@@ -136,7 +136,7 @@ RUN groupadd --gid "${USER_GID}" agent \
  && chown agent:agent /repos \
  && chown -R agent:agent /home/agent
 
-# Git-репозитории всех агентов: compose.yaml монтирует сюда том repos
+# Git-репозитории всех агентов: compose-win.yaml монтирует сюда том repos
 ENV REPOS_DIR=/repos
 
 USER agent
