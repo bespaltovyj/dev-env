@@ -342,6 +342,8 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
       GF_NEWS_NEWS_FEED_ENABLED: "false"
+      # Плагины ставятся в образ: без этого Grafana при каждом старте пытается скачать набор по умолчанию с grafana.com
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
     volumes:
       - ./data/monitoring/grafana:/var/lib/grafana
       - ./settings/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

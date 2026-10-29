@@ -10,7 +10,8 @@ datasources:
     url: http://victoria-metrics:8428
     isDefault: true
 
-  # Плагин victoriametrics-logs-datasource (GF_PLUGINS_PREINSTALL_SYNC в compose-win.yaml)
+  # Плагин victoriametrics-logs-datasource (ставится в образ, images/monitoring/grafana.Dockerfile).
+  # Logs Drilldown с ним не работает (нужен API Loki) — у плагина своя кнопка Drilldown в Explore
   - name: VictoriaLogs
     uid: victoria-logs
     type: victoriametrics-logs-datasource

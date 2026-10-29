@@ -1,0 +1,23 @@
+# Плагины-приложения Grafana, включаемые при старте. Сами плагины ставятся в образ
+# (images/monitoring/grafana.Dockerfile): у Grafana нет выхода в интернет.
+# Все Drilldown-приложения — меню Drilldown. Данные есть только у Metrics: Logs, Traces и Profiles
+# работают с Loki, Tempo и Pyroscope, а здесь VictoriaLogs и VictoriaTraces (для них — Explore).
+apiVersion: 1
+
+apps:
+  # Metrics Drilldown: метрики VictoriaMetrics без PromQL
+  - type: grafana-metricsdrilldown-app
+    org_id: 1
+    disabled: false
+  # Logs Drilldown: только источники данных Loki
+  - type: grafana-lokiexplore-app
+    org_id: 1
+    disabled: false
+  # Traces Drilldown: только источники данных Tempo
+  - type: grafana-exploretraces-app
+    org_id: 1
+    disabled: false
+  # Profiles Drilldown: только источники данных Pyroscope
+  - type: grafana-pyroscope-app
+    org_id: 1
+    disabled: false

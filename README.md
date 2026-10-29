@@ -56,7 +56,7 @@ settings/                           только статические наст
 ├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
 ├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
 ├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час («Резервная копия томов»)
-└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
+└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana: источники, плагины (п. 10)
 data/backup/                        не в git: резервные копии томов, сервис backup, профиль backup («Резервная копия томов»).
                                     Сами данные контейнеров — в named volume на диске VM (п. 6)
 images/
@@ -64,7 +64,7 @@ images/
 ├── common/common.Dockerfile        базовый образ: Debian, apt по https, curl (на нём собираются все)
 ├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
 ├── egress/                         образ прокси (squid без конфига)
-└── monitoring/grafana.Dockerfile   Grafana с плагином VictoriaLogs (п. 10)
+└── monitoring/grafana.Dockerfile   Grafana с плагинами VictoriaLogs и Drilldown (п. 10)
 scripts/build/
 ├── build.ps1, build.sh             сборка всех образов (п. 5)
 └── entrypoint.sh                   точка входа контейнера agent
@@ -96,30 +96,11 @@ scripts/build/
 8.  podman machine start agents   # запуск машины
 9.  .\scripts\build\build.ps1   # сборка образов
 10. Copy-Item .env.example .env   # инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
-11. podman compose -f "$env:AGENT_BOX_DIR\compose-win.yaml" up -d --force-recreate   # запуск контейнеров (мониторинг: --profile monitoring)
+11. podman compose -f "$env:AGENT_BOX_DIR\compose-win.yaml" --profile monitoring up -d --force-recreate   # запуск контейнеров (мониторинг: --profile monitoring)
 12. podman exec -it agent-box-agent-1 tmux attach -t orca   # подключение к orca serve для копирования кода orca://pair?code=...
 13. Ctrl+B, затем d   # выход из tmux-сессии; код добавить в десктопном Orca как удалённое окружение
 ```
 
-Если PowerShell вместо запуска `podman` предлагает выбрать приложение — в `C:\Windows\System32` лежит пустой файл
-`podman` («Проблемы»): удалить его или писать `podman.exe`.
-
-**Windows (cmd в режиме администратора)** — комментарий после `& rem` вводить можно, cmd его пропустит.
-
-```bat
-1.  set "AGENT_BOX_DIR=A:\orca\docker"   & rem общий путь к проекту (только для этого окна)
-2.  set "VM_DIR=/mnt/a/orca/docker"   & rem тот же путь внутри VM: буква диска строчная, косые черты прямые
-3.  cd /d %AGENT_BOX_DIR%   & rem перейти в папку проекта
-4.  if not exist data mkdir data   & rem папка data должна существовать до init
-5.  podman machine init agents --provider hyperv --cpus 6 --memory 8192 --swap 0 --disk-size 100 -v "%AGENT_BOX_DIR%\settings:%VM_DIR%/settings:ro" -v "%AGENT_BOX_DIR%\data:%VM_DIR%/data"   & rem создание машины (п. 2)
-6.  powershell -NoProfile -Command "Set-VM -Name agents -AutomaticStartAction Nothing"   & rem VM не стартует сама при загрузке Windows (п. 2)
-7.  podman machine start agents   & rem запуск машины
-8.  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build\build.ps1   & rem сборка образов (выполнение .ps1 разрешено только для этого запуска)
-9.  copy .env.example .env   & rem инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
-10. podman compose -f "%AGENT_BOX_DIR%\compose-win.yaml" up -d --force-recreate   & rem запуск контейнеров (мониторинг: --profile monitoring)
-11. podman exec -it agent-box-agent-1 tmux attach -t orca   & rem подключение к orca serve для копирования кода orca://pair?code=...
-12. Ctrl+B, затем d   & rem выход из tmux-сессии; код добавить в десктопном Orca как удалённое окружение
-```
 
 **Linux / macOS**
 
@@ -597,9 +578,20 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
 импортируются по ID (например, Node Exporter Full — `1860`); метки `job`/`instance` коллектор
 восстанавливает из OTLP-атрибутов, поэтому такие дашборды работают.
 
-**Без интернета.** Сеть `monitoring` — `internal: true`: ни Grafana, ни хранилища не выходят наружу. Плагин
-VictoriaLogs ставится при сборке образа (`images/monitoring/grafana.Dockerfile`, версия `VICTORIALOGS_PLUGIN_VERSION`),
-проверки обновлений и статистика Grafana выключены. node-exporter и otel-agent работают в сети VM, но наружу не ходят.
+**Drilldown.** Включены все Drilldown-приложения (меню **Drilldown**), они ставятся в образ и включаются
+`settings/monitoring/grafana/provisioning/plugins/apps.yaml`:
+
+| Приложение | Плагин | Данные |
+|---|---|---|
+| Metrics | `grafana-metricsdrilldown-app` | VictoriaMetrics (Prometheus API) — работает |
+| Logs | `grafana-lokiexplore-app` | только Loki — источника нет, раздел пустой (логи VictoriaLogs — в Explore) |
+| Traces | `grafana-exploretraces-app` | только Tempo — источника нет (трейсы VictoriaTraces — в Explore, тип Jaeger) |
+| Profiles | `grafana-pyroscope-app` | только Pyroscope — источника нет |
+
+**Без интернета.** Сеть `monitoring` — `internal: true`: ни Grafana, ни хранилища не выходят наружу. Плагины
+ставятся при сборке образа (`images/monitoring/grafana.Dockerfile`, версии — `ARG *_VERSION`), фоновая установка плагинов с grafana.com
+(`GF_PLUGINS_PREINSTALL_DISABLED`), проверки обновлений и статистика Grafana выключены. node-exporter и otel-agent
+работают в сети VM, но наружу не ходят.
 
 **Prometheus-формат.** Принимается двумя способами: scrape (добавить job в `settings/monitoring/otel-collector.yaml`)
 и push через remote write на `http://127.0.0.1:9090` (из agent — `http://otel-collector:9090`). Приёмник
