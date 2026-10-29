@@ -1,0 +1,14 @@
+# Источники apt для всех образов (копируется в /etc/apt/sources.list.d/debian.sources образа common).
+# Только https. Версия Debian (trixie) должна совпадать с DEBIAN_IMAGE в images/common/common.Dockerfile.
+
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: trixie trixie-updates
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp
+
+Types: deb
+URIs: https://deb.debian.org/debian-security
+Suites: trixie-security
+Components: main
+Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp

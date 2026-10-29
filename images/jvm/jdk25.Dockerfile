@@ -2,8 +2,8 @@
 # Eclipse Temurin JDK 25, sha256. В итоговом образе это JAVA_HOME по умолчанию.
 # Результат: /opt/jdk
 
-ARG DOWNLOADER_IMAGE=localhost/agent-box/downloader:latest
-FROM ${DOWNLOADER_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

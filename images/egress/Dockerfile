@@ -5,13 +5,14 @@
 # Конфиг в образ не входит: compose.yaml монтирует settings/egress/squid.conf и allowlist.txt
 # в /etc/squid. После правки — перезапустить контейнер egress, пересборка не нужна.
 
-ARG DEBIAN_IMAGE=debian:trixie-slim
-FROM ${DEBIAN_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends squid \
  && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /
 USER proxy
 EXPOSE 3128
 # Ошибка в конфиге или списке останавливает запуск с сообщением squid, а не ломает работу молча

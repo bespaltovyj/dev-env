@@ -2,8 +2,8 @@
 # Claude Code: официальный установщик claude.ai/install.sh (native-бинарник).
 # Результат: /opt/bin/claude
 
-ARG DOWNLOADER_IMAGE=localhost/agent-box/downloader:latest
-FROM ${DOWNLOADER_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

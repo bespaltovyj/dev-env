@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка agent-box: downloader -> компоненты (параллельно) -> итоговый образ.
+# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и egress.
 #
 #   ./scripts/build/build.sh                              # всё
 #   ./scripts/build/build.sh --build-arg GO_VERSION=...   # аргументы передаются во все сборки
@@ -10,10 +10,7 @@
 # Переменные: ENGINE (podman), PREFIX (localhost/agent-box), IMAGE (localhost/agent-box:latest),
 #             EGRESS_IMAGE (localhost/agent-box-egress:latest), GRAFANA_IMAGE (localhost/agent-box-grafana:latest),
 #             JOBS (4 параллельные сборки), LOG_DIR (.build-logs)
-# Требуется переменная окружения AGENT_ROOT.
 set -euo pipefail
-
-: "${AGENT_ROOT:?не задана переменная окружения AGENT_ROOT}"
 
 # Корень репозитория: скрипт лежит в scripts/build
 cd "$(dirname "$0")/../.."
@@ -60,8 +57,10 @@ build_component() {
   local name="$1" deps=() file
   file="$(stage_file "$name")" || return 1
   [[ -n "${DEPS[$name]:-}" ]] && mapfile -t deps < <(context_args ${DEPS[$name]})
+  # settings: статические настройки репозитория (common копирует settings/apt)
   "$ENGINE" build "${COMMON_ARGS[@]}" \
-    --build-arg "DOWNLOADER_IMAGE=$PREFIX/downloader:latest" \
+    --build-arg "COMMON_IMAGE=$PREFIX/common:latest" \
+    --build-context settings=settings \
     "${deps[@]}" "${EXTRA_ARGS[@]}" \
     -t "$PREFIX/$name:latest" -f "$file" images \
     >"$LOG_DIR/$name.log" 2>&1
@@ -88,8 +87,8 @@ build_wave() {
   fi
 }
 
-echo "== downloader"
-build_component downloader || { tail -n 20 "$LOG_DIR/downloader.log" >&2; exit 1; }
+echo "== common"
+build_component common || { tail -n 20 "$LOG_DIR/common.log" >&2; exit 1; }
 
 echo "== компоненты"
 build_wave "${WAVE1[@]}"
@@ -98,11 +97,12 @@ build_wave "${WAVE2[@]}"
 echo "== $IMAGE"
 mapfile -t FINAL_CONTEXTS < <(context_args "${WAVE1[@]}" "${WAVE2[@]}")
 "$ENGINE" build "${COMMON_ARGS[@]}" "${FINAL_CONTEXTS[@]}" "${EXTRA_ARGS[@]}" \
+  --build-arg "COMMON_IMAGE=$PREFIX/common:latest" \
   -t "$IMAGE" -f images/Dockerfile . 2>&1 | tee "$LOG_DIR/final.log"
 
 # Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
 echo "== $EGRESS_IMAGE"
-"$ENGINE" build "${COMMON_ARGS[@]}" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
+"$ENGINE" build "${COMMON_ARGS[@]}" --build-arg "COMMON_IMAGE=$PREFIX/common:latest" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
   >"$LOG_DIR/egress.log" 2>&1 || { tail -n 20 "$LOG_DIR/egress.log" >&2; exit 1; }
 
 # Grafana для профиля monitoring: плагин VictoriaLogs ставится при сборке

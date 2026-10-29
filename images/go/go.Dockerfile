@@ -2,8 +2,8 @@
 # Go: официальный релиз с go.dev, sha256.
 # Результат: /opt/go (в итоговом образе — /usr/local/go)
 
-ARG DOWNLOADER_IMAGE=localhost/agent-box/downloader:latest
-FROM ${DOWNLOADER_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

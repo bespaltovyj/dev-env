@@ -9,8 +9,8 @@
 # Собирать скриптом scripts/build/build.ps1 / build.sh, а не напрямую.
 # Контекст сборки — корень репозитория (файлы ограничивает .dockerignore).
 
-ARG DEBIAN_IMAGE=debian:trixie-slim
-FROM ${DEBIAN_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -19,10 +19,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # ================================================================ системные пакеты
 # Базовые утилиты, git, компиляторы, Python 3 и pip, клиент PostgreSQL (psql, createdb; 17 из Debian,
-# с сервером 18 работает)
+# с сервером 18 работает).
+# ca-certificates и curl уже есть в common
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git openssh-client build-essential \
+      git openssh-client build-essential \
       tini tmux less procps jq ripgrep \
       python3 python3-pip python3-venv \
       postgresql-client \
@@ -119,7 +120,7 @@ RUN echo "export PATH=\"$PATH\"" > /etc/profile.d/00-agent-box-path.sh
 RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
  && node --version && npm --version && claude --version && dcg --version \
  && python3 --version && pip3 --version && uv --version && ruff --version && pytest --version \
- && git --version && gcc --version | head -1 \
+ && git --version && gcc --version | sed -n 1p \
  && java -version && mvn --version && gradle --version --no-daemon \
  && go version && kubectl version --client && helm version \
  && rm -rf /tmp/check

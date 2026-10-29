@@ -1,11 +1,10 @@
-﻿# Сборка agent-box: downloader -> компоненты (параллельно) -> итоговый образ.
+﻿# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и egress.
 #
 #   .\scripts\build\build.ps1                                  # всё
 #   .\scripts\build\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'   # аргументы передаются во все сборки
 #   .\scripts\build\build.ps1 -Engine docker -Jobs 8
 #
 # Пути (images\, .build-logs) считаются от корня репозитория, текущая папка не важна.
-# Требуется переменная окружения AGENT_ROOT.
 [CmdletBinding()]
 param(
     [string]   $Engine    = 'podman',
@@ -21,11 +20,6 @@ param(
 # Continue: в PowerShell 5.1 перенаправленный stderr podman при Stop прерывает скрипт;
 # результат сборок проверяется по $LASTEXITCODE
 $ErrorActionPreference = 'Continue'
-
-if (-not $env:AGENT_ROOT) {
-    Write-Host '!! не задана переменная окружения AGENT_ROOT' -ForegroundColor Red
-    exit 1
-}
 
 # Корень репозитория: скрипт лежит в scripts\build
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path.TrimEnd('\')
@@ -54,7 +48,9 @@ function Get-ContextArgs([string[]] $Names) {
 }
 
 function Get-ComponentArgs([string] $Name) {
-    $argv = @('build') + $CommonArgs + @('--build-arg', "DOWNLOADER_IMAGE=$Prefix/downloader:latest")
+    # settings: статические настройки репозитория (common копирует settings/apt)
+    $argv = @('build') + $CommonArgs + @('--build-arg', "COMMON_IMAGE=$Prefix/common:latest",
+        '--build-context', 'settings=settings')
     if ($Deps.ContainsKey($Name)) { $argv += Get-ContextArgs $Deps[$Name] }
     # images/<группа>/<name>.Dockerfile
     $file = Get-ChildItem -Path images -Recurse -Filter "$Name.Dockerfile" | Select-Object -First 1
@@ -98,22 +94,22 @@ function Invoke-Wave([string[]] $Names) {
     }
 }
 
-Write-Host '== downloader'
-$code = & $BuildJob $EnginePath $Root (Get-ComponentArgs 'downloader') (Join-Path $LogRoot 'downloader.log')
-if ($code -ne 0) { Show-Failure 'downloader'; exit 1 }
+Write-Host '== common'
+$code = & $BuildJob $EnginePath $Root (Get-ComponentArgs 'common') (Join-Path $LogRoot 'common.log')
+if ($code -ne 0) { Show-Failure 'common'; exit 1 }
 
 Write-Host '== компоненты'
 Invoke-Wave $Wave1
 Invoke-Wave $Wave2
 
 Write-Host "== $Image"
-$argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('-t', $Image, '-f', 'images/Dockerfile', '.')
+$argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('--build-arg', "COMMON_IMAGE=$Prefix/common:latest", '-t', $Image, '-f', 'images/Dockerfile', '.')
 & $EnginePath @argv 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $LogRoot 'final.log')
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # Прокси для выхода agent в интернет (конфиг монтирует compose.yaml из settings/egress)
 Write-Host "== $EgressImage"
-$argv = @('build') + $CommonArgs + @('-t', $EgressImage, '-f', 'images/egress/Dockerfile', 'images/egress')
+$argv = @('build') + $CommonArgs + @('--build-arg', "COMMON_IMAGE=$Prefix/common:latest", '-t', $EgressImage, '-f', 'images/egress/Dockerfile', 'images/egress')
 $code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'egress.log')
 if ($code -ne 0) { Show-Failure 'egress'; exit 1 }
 

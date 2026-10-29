@@ -2,8 +2,8 @@
 # Helm с get.helm.sh, sha256.
 # Результат: /opt/bin/helm
 
-ARG DOWNLOADER_IMAGE=localhost/agent-box/downloader:latest
-FROM ${DOWNLOADER_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

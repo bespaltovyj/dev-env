@@ -2,8 +2,8 @@
 # uv / uvx от Astral: статический musl-бинарник, sha256.
 # Результат: /opt/bin/uv, /opt/bin/uvx
 
-ARG DOWNLOADER_IMAGE=localhost/agent-box/downloader:latest
-FROM ${DOWNLOADER_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

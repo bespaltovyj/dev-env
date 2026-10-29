@@ -4,13 +4,13 @@
 # Зависит от: uv (--build-context uv=...)
 # Результат: /opt/uv-tools, /opt/bin/pytest
 
-ARG DEBIAN_IMAGE=debian:trixie-slim
-FROM ${DEBIAN_IMAGE}
+ARG COMMON_IMAGE=localhost/agent-box/common:latest
+FROM ${COMMON_IMAGE}
 
 ARG PYTEST_VERSION=9.1.1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates python3 \
+ && apt-get install -y --no-install-recommends python3 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=uv /opt/bin/uv /usr/local/bin/uv

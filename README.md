@@ -1,37 +1,4 @@
-# Установка agent-box на Windows (Podman + Hyper-V)
-
-## Требования
-
-- Windows 10/11 Pro или Enterprise с включённым Hyper-V
-- Установленный Podman (CLI), при желании Podman Desktop
-- Для работы с Orca — десктопный Orca на Windows
-
-## Структура репозитория
-
-```
-compose.yaml, .env.example          запуск (п. 6)
-settings/                           только статические настройки, безопасные для git
-├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
-├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
-├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
-└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
-data/                               не в git: изменяемые данные контейнера (п. 6)
-├── claude/                         ~/.claude: логин, сессии, история, settings.json Claude Code
-├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
-├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
-├── bash/                           история bash (HISTFILE)
-├── postgres/                       данные PostgreSQL 18 (п. 11)
-└── monitoring/                     данные VictoriaMetrics, VictoriaLogs, VictoriaTraces, Grafana (п. 10)
-images/
-├── Dockerfile                      итоговый образ localhost/agent-box
-├── common/downloader.Dockerfile    базовый образ для скачивания компонентов
-├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
-├── egress/                         образ прокси (squid без конфига)
-└── monitoring/grafana.Dockerfile   Grafana с плагином VictoriaLogs (п. 10)
-scripts/build/
-├── build.ps1, build.sh             сборка всех образов (п. 5)
-└── entrypoint.sh                   точка входа контейнера agent
-```
+# agent-box: изолированное окружение для ИИ-агентов на Windows (Podman + Hyper-V)
 
 ## Архитектура
 
@@ -40,7 +7,7 @@ scripts/build/
 │                                                             │          │                                                              │
 │ ┌─ gvproxy.exe ───────────────────────────────────────────┐ │          │ vsock-network.service → tap0 192.168.127.2                   │
 │ │ 127.0.0.1:52230  SSH ───────────────────────────────────┼─┼─ hvsock ─► sshd :22  (podman API, rootless, core)                       │
-│ │ hvsock 0000DD87-… — сеть VM                             │ │          │ /mnt/a/orca/docker  ◄─ 9p ◄─ A:\podman (хост)                │
+│ │ hvsock 0000DD87-… — сеть VM                             │ │          │ /mnt/a/orca/docker/{data,settings:ro} ◄─ 9p ◄─ A:\orca\docker│
 │ │                                                         │ │          │                                                              │
 │ │ 1. sudo podman machine start                            │ │          │                                                              │
 │ │ 2. .\scripts\build\build.ps1 или build.sh               │ │          │ ┌─ контейнер agent-box-agent-1 ────────────────────────────┐ │
@@ -77,6 +44,88 @@ Orca на хосте подключается к `orca serve` в контейн�
 Весь трафик хост ↔ VM идёт через gvproxy: без него не работают ни 6769, ни 52230.
 Выход контейнера agent в интернет — только через прокси egress со списком доменов (п. 8).
 
+## Структура репозитория
+
+```
+compose.yaml, .env.example          запуск (п. 6)
+settings/                           только статические настройки, безопасные для git
+├── apt/debian.sources              источники apt (только https), встраивается в образ common
+├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
+├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
+├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana (п. 10)
+data/                               не в git: изменяемые данные контейнера (п. 6)
+├── claude/                         ~/.claude: логин, сессии, история, settings.json Claude Code
+├── repos/                          /repos — git-репозитории всех агентов, repos/orca-worktrees — worktree Orca
+├── orca/config/, orca/home/        ~/.config/orca, ~/.orca
+├── bash/                           история bash (HISTFILE)
+├── postgres/                       данные PostgreSQL 18 (п. 11)
+└── monitoring/                     данные VictoriaMetrics, VictoriaLogs, VictoriaTraces, Grafana (п. 10)
+images/
+├── Dockerfile                      итоговый образ localhost/agent-box
+├── common/common.Dockerfile        базовый образ: Debian, apt по https, curl (на нём собираются все)
+├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
+├── egress/                         образ прокси (squid без конфига)
+└── monitoring/grafana.Dockerfile   Grafana с плагином VictoriaLogs (п. 10)
+scripts/build/
+├── build.ps1, build.sh             сборка всех образов (п. 5)
+└── entrypoint.sh                   точка входа контейнера agent
+```
+
+## Требования
+
+- Windows 10/11 Pro или Enterprise с включённым Hyper-V
+- Установленный Podman (CLI), при желании Podman Desktop
+- Для работы с Orca — десктопный Orca на Windows
+
+## Быстрый старт
+
+Все команды по порядку. Подробности — в разделах 1–11 ниже. Пути — для проекта в `A:\orca\docker`.
+
+**1. Создать и запустить машину** — PowerShell от имени администратора (п. 2, 3):
+
+```powershell
+New-Item -ItemType Directory -Force A:\orca\docker\data\claude, A:\orca\docker\data\repos\orca-worktrees, A:\orca\docker\data\orca\config, A:\orca\docker\data\orca\home, A:\orca\docker\data\bash, A:\orca\docker\data\postgres | Out-Null
+podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 60 -v A:\orca\docker\data:/mnt/a/orca/docker/data -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro
+Set-VM -Name agents -AutomaticStartAction Nothing
+podman machine start agents
+podman system connection default agents
+```
+
+**2. Настройки и сборка образов** — обычный PowerShell, без прав администратора (п. 1, 5):
+
+```powershell
+Set-Location A:\orca\docker
+Copy-Item .env.example .env                                   # заполнить: POSTGRES_PASSWORD, ключи и т.д.
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass    # разрешить .ps1 только в этом окне
+.\scripts\build\build.ps1
+```
+
+**3. Запуск контейнеров** — от имени администратора (п. 6):
+
+```powershell
+podman compose -f A:\orca\docker\compose.yaml up -d
+podman compose -f A:\orca\docker\compose.yaml --profile monitoring up -d    # то же вместе с мониторингом (п. 10)
+```
+
+**4. Orca в режиме serve** (п. 7). `orca-ide serve` запускается сам при старте контейнера в tmux-сессии `orca`
+(если в `.env` не задано `ORCA_SERVE=0`). Код сопряжения — без прав администратора:
+
+```powershell
+podman exec -it agent-box-agent-1 tmux attach -t orca
+```
+
+Скопировать `orca://pair?code=...`, отключиться `Ctrl+B`, `D`, в десктопном Orca добавить удалённое окружение по
+этому коду. Если сервер не запущен (`ORCA_SERVE=0` или упал):
+
+```powershell
+podman exec agent-box-agent-1 tmux kill-session -t orca
+podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --pairing-address ws://127.0.0.1:6769"
+```
+
+**Каждый следующий раз** — от имени администратора: `podman machine start agents`, затем
+`podman compose -f A:\orca\docker\compose.yaml up -d`; код сопряжения новый при каждом запуске сервера.
+
 ## 1. Права: что требует администратора
 
 Управление Hyper-V разрешено только повышенным процессам. Пользователь **не** входит в группу
@@ -110,6 +159,7 @@ Remove-LocalGroupMember -SID 'S-1-5-32-578' -Member $env:USERNAME   # от им�
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned   # постоянно для пользователя, админ не нужен
 Set-ExecutionPolicy -Scope Process RemoteSigned       # только текущее окно
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # только текущее окно, без проверок (разово)
 ```
 
 `RemoteSigned`: локальные скрипты запускаются, скачанные из интернета (с пометкой `Zone.Identifier`) — только
@@ -121,7 +171,7 @@ Set-ExecutionPolicy -Scope Process RemoteSigned       # только текущ�
 PowerShell **от имени администратора** (`init` пишет в реестр `HKLM`):
 
 ```powershell
-podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 60 -v A:\orca\docker:/mnt/a/orca/docker
+podman machine init agents --provider hyperv --image docker://quay.io/podman/machine-os:6.1 --cpus 6 --memory 8192 --swap 0 --disk-size 60 -v A:\orca\docker\data:/mnt/a/orca/docker/data -v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro
 ```
 
 | Параметр | Значение |
@@ -132,10 +182,15 @@ podman machine init agents --provider hyperv --image docker://quay.io/podman/mac
 | `--memory 8192` | 8 ГБ памяти |
 | `--swap 0` | без swap |
 | `--disk-size 60` | диск 60 ГБ |
-| `-v` | единственная папка Windows, видимая машине. Цель обязана быть `/mnt/<диск>/<путь>` той же папки: compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings` |
+| `-v ...\data` | данные контейнеров (п. «Структура», `data/`), чтение и запись |
+| `-v ...\settings:...:ro` | статические настройки, VM и контейнеры видят их только для чтения |
+
+Других папок Windows машина не видит: `compose.yaml` монтирует в контейнеры только `./data/...` и `./settings/...`
+(образы собираются без монтирования — контекст сборки передаётся через API). Цель `-v` обязана быть
+`/mnt/<диск>/<путь>` той же папки: compose переводит `A:\orca\docker\settings` в `/mnt/a/orca/docker/settings`.
+Если проект лежит в другом месте, поменять оба пути. Папку `data` создать до `init`, если её ещё нет.
 
 Монтирование меняется только пересозданием машины (`rm` + `init`), образы и named volume при этом удаляются.
-Нужна именно папка проекта: из неё монтируются `settings/` и `data/`.
 
 Hyper-V не должен запускать VM сам при загрузке Windows: так VM работает без gvproxy и недоступна (см. «Проблемы»).
 
@@ -186,7 +241,8 @@ Copy-Item .env.example .env       # заполнить переменные
 
 Из `cmd`: `powershell -NoProfile -ExecutionPolicy Bypass -File A:\orca\docker\scripts\build\build.ps1`.
 Скрипт сам переходит в корень репозитория и берёт `podman.exe` (файлы без расширения в PATH пропускает).
-Собираются два образа: `localhost/agent-box` и прокси `localhost/agent-box-egress` (п. 8).
+Собираются базовый `localhost/agent-box/common`, компоненты `localhost/agent-box/<name>`, итоговый `localhost/agent-box`,
+прокси `localhost/agent-box-egress` (п. 8) и Grafana `localhost/agent-box-grafana` (п. 10).
 Сборка ходит в интернет напрямую — ограничение п. 8 действует только на запущенный контейнер agent.
 
 ## 6. Запуск контейнера
@@ -348,7 +404,7 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
 ### Изменить список
 
 `settings/egress/squid.conf` и `allowlist.txt` не входят в образ: `compose.yaml` монтирует их в egress
-только для чтения. Для этого папка проекта должна быть смонтирована в машину (п. 2, `-v A:\orca\docker:/mnt/a/orca/docker`),
+только для чтения. Для этого папка `settings` должна быть смонтирована в машину (п. 2, `-v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro`),
 иначе egress не создаётся (`statfs ... settings/egress/...`) и у agent нет интернета.
 
 1. Посмотреть отказы (без админа):
@@ -524,9 +580,9 @@ VM включена в Hyper-V без gvproxy (осталась от неуда�
 В `System32` пустой файл `podman` без расширения (обычно результат перенаправления `>` в консоли администратора).
 PowerShell находит его раньше `podman.exe`. Удалить от имени администратора: `del C:\Windows\System32\podman`.
 
-### `statfs /mnt/a/orca/docker/settings/...: no such file or directory` (или `input/output error`)
+### `statfs /mnt/a/orca/docker/{settings,data}/...: no such file or directory` (или `input/output error`)
 
-Папка проекта не смонтирована в VM по пути, который ожидает compose (п. 2, параметр `-v`).
+Папка `settings` или `data` не смонтирована в VM по пути, который ожидает compose (п. 2, параметры `-v`).
 Та же ошибка с `settings/egress/squid.conf` — у egress (п. 8): без монтирования он не запускается.
 
 ### `java: command not found` / `orca: command not found` в контейнере
