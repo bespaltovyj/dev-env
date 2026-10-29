@@ -1,4 +1,4 @@
-﻿# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и egress.
+﻿# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
 #
 #   .\scripts\build\build.ps1                                  # всё
 #   .\scripts\build\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'   # аргументы передаются во все сборки
@@ -10,7 +10,6 @@ param(
     [string]   $Engine    = 'podman',
     [string]   $Prefix    = 'localhost/agent-box',
     [string]   $Image     = 'localhost/agent-box:latest',
-    [string]   $EgressImage = 'localhost/agent-box-egress:latest',
     [string]   $GrafanaImage = 'localhost/agent-box-grafana:latest',
     [int]      $Jobs      = 4,
     [string]   $LogDir    = '.build-logs',
@@ -107,16 +106,10 @@ $argv = @('build') + $CommonArgs + (Get-ContextArgs ($Wave1 + $Wave2)) + @('--bu
 & $EnginePath @argv 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $LogRoot 'final.log')
 if ($LASTEXITCODE -ne 0) { exit 1 }
 
-# Прокси для выхода agent в интернет (конфиг монтирует compose-win.yaml из settings/egress)
-Write-Host "== $EgressImage"
-$argv = @('build') + $CommonArgs + @('--build-arg', "COMMON_IMAGE=$Prefix/common:latest", '-t', $EgressImage, '-f', 'images/egress/Dockerfile', 'images/egress')
-$code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'egress.log')
-if ($code -ne 0) { Show-Failure 'egress'; exit 1 }
-
-# Grafana для профиля monitoring: плагин VictoriaLogs ставится при сборке
+# Grafana для профиля monitoring: плагины ставятся при сборке. Egress (Envoy) — готовый образ, не собирается
 Write-Host "== $GrafanaImage"
 $argv = @('build') + $CommonArgs + @('-t', $GrafanaImage, '-f', 'images/monitoring/grafana.Dockerfile', 'images/monitoring')
 $code = & $BuildJob $EnginePath $Root $argv (Join-Path $LogRoot 'grafana.log')
 if ($code -ne 0) { Show-Failure 'grafana'; exit 1 }
 
-Write-Host "== готово: $Image, $EgressImage, $GrafanaImage"
+Write-Host "== готово: $Image, $GrafanaImage"

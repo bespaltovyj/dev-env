@@ -1,0 +1,247 @@
+# ================================================================ egress на Envoy
+# Выход agent в интернет: agent ходит через HTTP(S)_PROXY=http://egress:3128.
+#   https — CONNECT host:443: хост проверяется по списку, TLS пробрасывается без расшифровки;
+#   http  — обычный прокси-запрос (GET http://host/...), тоже по списку.
+# Всё, что не в списке, — 403 и запись в журнал (podman logs agent-box-egress-1, "details": "rbac_access_denied...").
+# Метрики Prometheus — :9902/stats/prometheus (только этот путь, остальной admin недоступен).
+#
+# Список доменов — политика RBAC «allowlist» ниже:
+#   ([a-z0-9-]+\.)*example\.com — домен и все поддомены;  example\.com — только сам домен.
+# После правки: podman restart agent-box-egress-1 (пересборка не нужна).
+
+admin:
+  address:
+    socket_address: { address: 127.0.0.1, port_value: 9901 }
+
+# Метки метрик Prometheus. Подкластеры dynamic forward proxy называются DFPCluster:<host>:<port>, а
+# стандартное извлечение меток режет имя кластера по первой точке (api.github.com и api.anthropic.com
+# слились бы в «api») и выполняется раньше пользовательских правил. Поэтому стандартные правила выключены,
+# нужные заданы здесь: envoy_cluster_name="DFPCluster_github.com_443" — хост целиком (":" Envoy заменяет на "_").
+stats_config:
+  use_all_default_tags: false
+  stats_tags:
+    - tag_name: envoy.cluster_name
+      regex: '^cluster\.((DFPCluster_.+?_\d+|[^.]+)\.)'
+    - tag_name: envoy.listener_address
+      regex: '^listener\.((\d+\.\d+\.\d+\.\d+_\d+)\.)'
+    - tag_name: envoy.http_conn_manager_prefix
+      regex: '^listener\..*?\.http\.(([^.]+)\.)'
+    - tag_name: envoy.http_conn_manager_prefix
+      regex: '^http\.(([^.]+)\.)'
+    - tag_name: envoy.rbac_http_prefix
+      regex: '\.rbac\.(([a-z_]+_)\.)'
+    - tag_name: envoy.response_code
+      regex: '_rq(_(\d{3}))$'
+    - tag_name: envoy.response_code_class
+      regex: '_rq_((\d))xx$'
+
+static_resources:
+  listeners:
+    # ------------------------------------------------------------ прокси для agent
+    - name: egress
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 3128 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: egress
+                # CONNECT — HTTP/1.1-«апгрейд» до TCP-туннеля
+                upgrade_configs:
+                  - upgrade_type: CONNECT
+                http_protocol_options:
+                  allow_absolute_url: true
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          time: "%START_TIME%"
+                          client: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+                          method: "%REQ(:METHOD)%"
+                          host: "%REQ(:AUTHORITY)%"
+                          path: "%REQ(:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          flags: "%RESPONSE_FLAGS%"
+                          details: "%RESPONSE_CODE_DETAILS%"
+                          upstream: "%UPSTREAM_HOST%"
+                          bytes_in: "%BYTES_RECEIVED%"
+                          bytes_out: "%BYTES_SENT%"
+                          duration_ms: "%DURATION%"
+                  # Тот же журнал по OTLP в otel-collector → VictoriaLogs: в метриках нет хоста отклонённых
+                  # запросов (они не доходят до подкластера), в логах он есть. Без профиля monitoring
+                  # otel-collector не запущен — записи теряются, egress работает
+                  - name: envoy.access_loggers.open_telemetry
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.open_telemetry.v3.OpenTelemetryAccessLogConfig
+                      log_name: egress
+                      grpc_service:
+                        envoy_grpc: { cluster_name: otel_collector }
+                      resource_attributes:
+                        values:
+                          - key: service.name
+                            value: { string_value: egress }
+                      body:
+                        string_value: "%REQ(:METHOD)% %REQ(:AUTHORITY)% %RESPONSE_CODE% %RESPONSE_CODE_DETAILS%"
+                      attributes:
+                        values:
+                          - { key: client, value: { string_value: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%" } }
+                          - { key: method, value: { string_value: "%REQ(:METHOD)%" } }
+                          - { key: host, value: { string_value: "%REQ(:AUTHORITY)%" } }
+                          - { key: path, value: { string_value: "%REQ(:PATH)%" } }
+                          - { key: status, value: { string_value: "%RESPONSE_CODE%" } }
+                          - { key: flags, value: { string_value: "%RESPONSE_FLAGS%" } }
+                          - { key: details, value: { string_value: "%RESPONSE_CODE_DETAILS%" } }
+                          - { key: upstream, value: { string_value: "%UPSTREAM_HOST%" } }
+                          - { key: bytes_in, value: { string_value: "%BYTES_RECEIVED%" } }
+                          - { key: bytes_out, value: { string_value: "%BYTES_SENT%" } }
+                          - { key: duration_ms, value: { string_value: "%DURATION%" } }
+                route_config:
+                  name: egress
+                  virtual_hosts:
+                    - name: any
+                      domains: ["*"]
+                      routes:
+                        # CONNECT host:443 — TCP-туннель к этому хосту
+                        - match:
+                            connect_matcher: {}
+                          route:
+                            cluster: dynamic_forward_proxy
+                            upgrade_configs:
+                              - upgrade_type: CONNECT
+                                connect_config: {}
+                        # Обычный HTTP
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: dynamic_forward_proxy
+                http_filters:
+                  # CONNECT только на 443 (как SSL_ports в squid)
+                  - name: envoy.filters.http.rbac
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                      rules_stat_prefix: connect_port_
+                      rules:
+                        action: DENY
+                        policies:
+                          connect-not-443:
+                            permissions:
+                              - and_rules:
+                                  rules:
+                                    - header: { name: ":method", string_match: { exact: CONNECT } }
+                                    - not_rule:
+                                        header: { name: ":authority", string_match: { suffix: ":443" } }
+                            principals: [{ any: true }]
+                  # Allowlist доменов. :authority — «host» или «host:port»
+                  - name: envoy.filters.http.rbac
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC
+                      rules_stat_prefix: allowlist_
+                      rules:
+                        action: ALLOW
+                        policies:
+                          allowlist:
+                            principals: [{ any: true }]
+                            permissions:
+                              # Claude / Anthropic
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*anthropic\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*claude\.ai(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*claude\.com(:(80|443))?$' } } }
+                              # Langfuse Cloud EU: трейсы Claude Code (хук Stop)
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^cloud\.langfuse\.com(:(80|443))?$' } } }
+                              # Orca: orca serve при первом запуске скачивает рантайм Node.js для orcad
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^nodejs\.org(:(80|443))?$' } } }
+                              # GitHub (git по https, gh, релизы, raw)
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*github\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*githubusercontent\.com(:(80|443))?$' } } }
+                              # npm
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^registry\.npmjs\.org(:(80|443))?$' } } }
+                              # PyPI (pip, uv)
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^pypi\.org(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^files\.pythonhosted\.org(:(80|443))?$' } } }
+                              # Go
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^proxy\.golang\.org(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^sum\.golang\.org(:(80|443))?$' } } }
+                              # Maven Central, Gradle
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^repo\.maven\.apache\.org(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^repo1\.maven\.org(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*gradle\.org(:(80|443))?$' } } }
+                              # Kubernetes / Helm
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^dl\.k8s\.io(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^cdn\.dl\.k8s\.io(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^get\.helm\.sh(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^artifacthub\.io(:(80|443))?$' } } }
+                  # Разрешение имени из :authority и подключение. Подкластер на каждый хост:
+                  # своя статистика envoy_cluster_* с envoy_cluster_name="dynamic_forward_proxy:<host>:<port>"
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      sub_cluster_config:
+                        cluster_init_timeout: 5s
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # ------------------------------------------------------------ метрики для otel-collector
+    # Только /stats/prometheus из admin: остальной admin (config_dump, quitquitquit) из сети недоступен
+    - name: metrics
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 9902 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: metrics
+                route_config:
+                  name: metrics
+                  virtual_hosts:
+                    - name: metrics
+                      domains: ["*"]
+                      routes:
+                        - match: { path: /stats/prometheus }
+                          route: { cluster: admin }
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: dynamic_forward_proxy
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          sub_clusters_config:
+            lb_policy: ROUND_ROBIN
+            max_sub_clusters: 256
+            sub_cluster_ttl: 3600s
+
+    # otel-collector (профиль monitoring) для журнала по OTLP/gRPC
+    - name: otel_collector
+      type: STRICT_DNS
+      connect_timeout: 2s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: otel_collector
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: otel-collector, port_value: 4317 }
+
+    - name: admin
+      type: STATIC
+      load_assignment:
+        cluster_name: admin
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: 9901 }

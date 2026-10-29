@@ -21,10 +21,11 @@ receivers:
       global:
         scrape_interval: 30s
       scrape_configs:
-        # squid-exporter работает в сетевом пространстве egress
-        - job_name: squid
+        # egress (Envoy): отдельный listener только с /stats/prometheus, admin Envoy из сети недоступен
+        - job_name: envoy
+          metrics_path: /stats/prometheus
           static_configs:
-            - targets: ["egress:9301"]
+            - targets: ["egress:9902"]
         - job_name: cadvisor
           static_configs:
             - targets: ["cadvisor:8080"]

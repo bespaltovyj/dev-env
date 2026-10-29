@@ -30,7 +30,7 @@
 │                    └─────────────────┘                      │          │ └─────┬────────────────────────────────────────────────────┘ │
 │                                                             │          │       │ HTTP(S)_PROXY → egress:3128                          │          ┌── internet ────────┐
 │                                                             │          │ ┌─────▼─ контейнер agent-box-egress-1 ─────────────────────┐ │          │                    │
-│                                                             │          │ │ squid :3128 · домены из settings/egress/allowlist.txt    │ │          │ github, npm, pypi  │
+│                                                             │          │ │ Envoy :3128 · allowlist в settings/egress/envoy.yaml     │ │          │ github, npm, pypi  │
 │                                                             │          │ │ остальное → 403 + лог (podman logs agent-box-egress-1)   │ │          │ anthropic, maven   │
 │                                                             │          │ │ сети agent-internal + outside ───────────────────────────┼─┼─gvproxy──► allowlist only     │
 │                                                             │          │ └──────────────────────────────────────────────────────────┘ │          │                    │
@@ -53,17 +53,16 @@ compose-unix.yaml                   запуск на Linux/macOS: данные 
 settings/                           только статические настройки, безопасные для git
 ├── apt/debian.sources              источники apt (только https), встраивается в образ common
 ├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
-├── managed-settings.json           управляемые настройки Claude Code (хук dcg), встраивается в образ
-├── egress/                         squid.conf, allowlist.txt — монтируются в egress (п. 8)
+├── managed-settings.json           управляемые настройки Claude Code (хуки dcg и Langfuse, без телеметрии), встраивается в образ
+├── egress/envoy.yaml               конфиг egress (Envoy) с allowlist доменов — монтируется в egress (п. 8)
 ├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час («Резервная копия томов»)
-└── monitoring/                     otel-collector, otel-agent, vmauth, provisioning Grafana: источники, плагины (п. 10)
+└── monitoring/                     otel-collector, otel-agent, vmauth; Grafana: источники, плагины, дашборды по умолчанию (п. 10)
 data/backup/                        не в git: резервные копии томов, сервис backup, профиль backup («Резервная копия томов»).
                                     Сами данные контейнеров — в named volume на диске VM (п. 6)
 images/
 ├── Dockerfile                      итоговый образ localhost/agent-box
 ├── common/common.Dockerfile        базовый образ: Debian, apt по https, curl (на нём собираются все)
 ├── ai/ go/ js/ jvm/ k8s/ python/   компоненты: <группа>/<name>.Dockerfile
-├── egress/                         образ прокси (squid без конфига)
 └── monitoring/grafana.Dockerfile   Grafana с плагинами VictoriaLogs и Drilldown (п. 10)
 scripts/build/
 ├── build.ps1, build.sh             сборка всех образов (п. 5)
@@ -326,8 +325,8 @@ Copy-Item .env.example .env       # заполнить переменные
 
 Из `cmd`: `powershell -NoProfile -ExecutionPolicy Bypass -File A:\orca\docker\scripts\build\build.ps1`.
 Скрипт сам переходит в корень репозитория и берёт `podman.exe` (файлы без расширения в PATH пропускает).
-Собираются базовый `localhost/agent-box/common`, компоненты `localhost/agent-box/<name>`, итоговый `localhost/agent-box`,
-прокси `localhost/agent-box-egress` (п. 8) и Grafana `localhost/agent-box-grafana` (п. 10).
+Собираются базовый `localhost/agent-box/common`, компоненты `localhost/agent-box/<name>`, итоговый `localhost/agent-box`
+и Grafana `localhost/agent-box-grafana` (п. 10). Egress — готовый образ `envoyproxy/envoy` (п. 8).
 Сборка ходит в интернет напрямую — ограничение п. 8 действует только на запущенный контейнер agent.
 
 ## 6. Запуск контейнера
@@ -378,6 +377,28 @@ subuid в VM, а не пользователь `core`, которому прин
 
 Тома, созданные раньше с `userns_mode: keep-id`, принадлежат другому uid VM. При переходе на эту схему их нужно
 удалить один раз (данных в них нет — всё лежало в `data/`): `podman compose -f A:\orca\docker\compose-win.yaml down -v`.
+
+### Git и GitHub
+
+Настройки в `.env` (раздел «git» в `.env.example`), их при каждом старте применяет `scripts/build/entrypoint.sh`:
+
+| Переменная | Что делает |
+|---|---|
+| `GIT_AUTHOR_NAME/EMAIL`, `GIT_COMMITTER_NAME/EMAIL` | автор коммитов; `user.name`/`user.email` в `~/.gitconfig` ставятся из `GIT_AUTHOR_*` |
+| `GH_TOKEN` | git по https к GitHub (clone/push): помощник учётных данных берёт токен из окружения, в файлы он не пишется. Fine-grained токен только на нужные репозитории — он виден всем агентам |
+| `GIT_SIGN=0` | выключить подпись (по умолчанию коммиты и теги подписываются) |
+| `GIT_SIGNING_KEY` | свой SSH-ключ подписи вместо создаваемого |
+
+Подпись — SSH-ключом контейнера `~/.ssh/git-signing` (ed25519, создаётся при первом запуске, лежит в томе
+`agent-home`), а не GPG-ключом хоста: в контейнере его могут прочитать агенты, а отдельный ключ можно отозвать,
+не трогая личный. Чтобы GitHub показывал коммиты как «Verified», публичный ключ добавить в GitHub
+(Settings → SSH and GPG keys → New SSH key → Key type: **Signing key**):
+
+```bat
+podman exec agent-box-agent-1 cat /home/agent/.ssh/git-signing.pub
+```
+
+Изменения `.env` применяются пересозданием контейнера: `podman compose -f A:\orca\docker\compose-win.yaml up -d --force-recreate agent`.
 
 ### Как устроен контейнер
 
@@ -457,21 +478,30 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
 
 ## 8. Доступ в интернет: allowlist
 
-Контейнер agent ходит в интернет только через прокси `egress` (squid) и только на домены из
-`settings/egress/allowlist.txt`. Всё остальное получает 403 и записывается в лог.
+Контейнер agent ходит в интернет только через прокси `egress` (Envoy, `envoyproxy/envoy:distroless`) и только на
+домены из политики `allowlist` в `settings/egress/envoy.yaml`. Всё остальное получает 403 и записывается в журнал.
 
 ```
-┌─ agent ───────────────────────┐  сеть agent-internal   ┌─ egress (squid :3128) ─────┐  сеть outside
-│ claude, npm, pip, git, mvn …  │  internal: нет выхода  │ allowlist.txt              │ ──────────────► интернет
-│ HTTPS_PROXY=http://egress:3128│ ─► и внешнего DNS ────►│ остальное → 403 + лог      │ (только из списка)
+┌─ agent ───────────────────────┐  сеть agent-internal   ┌─ egress (Envoy :3128) ─────┐  сеть outside
+│ claude, npm, pip, git, mvn …  │  internal: нет выхода  │ RBAC allowlist (envoy.yaml)│ ──────────────► интернет
+│ HTTPS_PROXY=http://egress:3128│ ─► и внешнего DNS ────►│ остальное → 403 + журнал   │ (только из списка)
 └───────────────────────────────┘                        └────────────────────────────┘
         ▲ 127.0.0.1:6769 (Orca) — проброс порта во внутреннюю сеть работает
 ```
 
 - **Сеть `agent-internal`** (`internal: true`) не имеет маршрута наружу и внешнего DNS. Обойти прокси нельзя:
   `curl --noproxy '*'`, ssh, произвольные TCP-порты не работают. `egress` подключён к ней и к сети `outside`.
-- **HTTPS не расшифровывается**: squid видит домен из `CONNECT`, сертификаты не подменяются.
+- **HTTPS не расшифровывается**: Envoy видит домен из `CONNECT`, сертификаты не подменяются.
   Разрешены порты 80 и 443, `CONNECT` — только на 443. `git` — только по https, не по ssh.
+- **Как устроен** (`settings/egress/envoy.yaml`): `:3128` — HTTP-прокси (`CONNECT` и абсолютные URL), фильтры RBAC
+  (`CONNECT` только на 443; allowlist по `:authority`), dynamic forward proxy с подкластером на каждый хост
+  (`DFPCluster:<хост>:<порт>` — своя статистика). `:9902` отдаёт только `/stats/prometheus`, admin Envoy из сети
+  недоступен. Не защищает от обращений к внутренним адресам, если разрешённый домен на них указывает.
+- **Журнал запросов** — в stdout (`podman logs agent-box-egress-1`, JSON) и по OTLP в otel-collector → VictoriaLogs
+  (профиль monitoring; без него записи теряются, egress работает). Поля: `host`, `method`, `status`, `details`,
+  `client`, `bytes_in/out`. Заблокированные хосты (в метриках хоста нет — отклонённый запрос не доходит до
+  подкластера): `service.name:egress details:rbac_access_denied* | stats by (host) count()` в VMUI VictoriaLogs
+  или в разделе «Заблокированные хосты» дашборда Envoy (egress).
 - **Прокси в agent** задаёт `compose-win.yaml` (`environment`, важнее `.env`): `HTTP(S)_PROXY`, `NO_PROXY`,
   `NODE_USE_ENV_PROXY=1` (без него `fetch` в Node.js прокси не использует). Maven и Gradle переменные окружения
   не читают: `scripts/build/entrypoint.sh` при старте создаёт `~/.m2/settings.xml` и `~/.gradle/gradle.properties` с прокси,
@@ -480,31 +510,31 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
 Проверено: claude (api.anthropic.com), npm, pip, go, git (https), Maven, Gradle и `orca serve` работают;
 `example.com` → 403; прямой выход мимо прокси → нет соединения.
 
-Стартовый список (`settings/egress/allowlist.txt`): Anthropic/Claude, `nodejs.org` (рантайм для `orca serve`), GitHub,
-npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.example.com` — домен и поддомены,
-`example.com` — только сам домен; один домен в обеих формах squid сочтёт дублем.
+Стартовый список: Anthropic/Claude, `nodejs.org` (рантайм для `orca serve`), Langfuse, GitHub, npm, PyPI, Go proxy,
+Maven Central, Gradle, Kubernetes/Helm. Формат — регулярное выражение по `:authority` (`host` или `host:port`):
+`^([a-z0-9-]+\.)*example\.com(:(80|443))?$` — домен и поддомены, `^example\.com(:(80|443))?$` — только сам домен.
 
 ### Изменить список
 
-`settings/egress/squid.conf` и `allowlist.txt` не входят в образ: `compose-win.yaml` монтирует их в egress
-только для чтения. Для этого папка `settings` должна быть смонтирована в машину (п. 2, `-v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro`),
+`settings/egress/envoy.yaml` не входит в образ: `compose-win.yaml` монтирует его в egress только для чтения. Для этого
+папка `settings` должна быть смонтирована в машину (п. 2, `-v A:\orca\docker\settings:/mnt/a/orca/docker/settings:ro`),
 иначе egress не создаётся (`statfs ... settings/egress/...`) и у agent нет интернета.
 
 1. Посмотреть отказы (без админа):
    ```bat
-   podman logs agent-box-egress-1 | findstr DENIED
+   podman logs agent-box-egress-1 | findstr rbac_access_denied
    ```
-   Строка `TCP_DENIED/403 CONNECT nodejs.org:443` — домен, который нужно добавить.
-2. Дописать домен в `settings/egress/allowlist.txt`.
+   Строка `"host":"nodejs.org:443","method":"CONNECT","status":403` — домен, который нужно добавить.
+2. Дописать строку `- header: ...` в политику `allowlist` в `settings/egress/envoy.yaml`.
 3. Перезапустить egress (без админа, пересборка не нужна):
    ```bat
    podman restart agent-box-egress-1
    podman logs --tail 20 agent-box-egress-1
    ```
-   При старте squid проверяет конфиг (`squid -k parse`): с ошибкой в `squid.conf` или списке контейнер
-   не запустится, причина — в `podman logs`.
+   С ошибкой в конфиге Envoy не запустится, причина — в `podman logs`.
 
-Корпоративный прокси наверху — `cache_peer` в `settings/egress/squid.conf`; `HTTP_PROXY` в `.env` игнорируется.
+Корпоративный прокси наверху Envoy не поддерживает так же просто, как squid (`cache_peer`): нужен кластер с
+туннелированием `CONNECT` к нему. `HTTP_PROXY` в `.env` игнорируется.
 
 ## 9. Langfuse: трейсы Claude Code
 
@@ -523,7 +553,7 @@ npm, PyPI, Go proxy, Maven Central, Gradle, Kubernetes/Helm. Формат: `.exa
   LANGFUSE_BASE_URL=https://cloud.langfuse.com
   ```
   Без `TRACE_TO_LANGFUSE=true` хук сразу завершается; при недоступном Langfuse не мешает работе (fail-open, flush до 5 с);
-- домен сервера — в `settings/egress/allowlist.txt` (`cloud.langfuse.com`); SDK ходит через `HTTPS_PROXY`.
+- домен сервера — в allowlist `settings/egress/envoy.yaml` (`cloud.langfuse.com`); SDK ходит через `HTTPS_PROXY`.
 
 Лог и состояние хука — `~/.claude/state/` (том `claude`), подробный лог — `CC_LANGFUSE_DEBUG=true`.
 Ключи видны агентам в окружении контейнера: используйте отдельный проект Langfuse для агентов.
@@ -547,7 +577,7 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
 
 ```
  exporters / приложения                     otel-collector                         хранилища
- squid-exporter (egress:9301) ─ scrape ─►┐                              ┌─► VictoriaMetrics :8428  ─┐
+ egress Envoy (:9902) ───────── scrape ─►┐                              ┌─► VictoriaMetrics :8428  ─┐
  cAdvisor :8080 ──────────────── scrape ─►│  receivers:                  │                            │
  Victoria*, vmauth, Grafana ──── scrape ─►│   prometheus (scrape)        ├─► VictoriaLogs    :9428  ─┼─► vmauth :8427 (VMUI)
  node-exporter ◄─ otel-agent ─── OTLP ──►│   otlp :4317/:4318           │                            │   Grafana :3000
@@ -561,7 +591,7 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
 | `otel-agent` | — (сеть VM) | забирает метрики node-exporter и передаёт в otel-collector по OTLP |
 | `node-exporter` | — (сеть VM, 127.0.0.1:9100 внутри VM) | метрики самой VM: CPU, память, диски, сеть |
 | `cadvisor` | 8080 | метрики контейнеров по cgroups, с именами из podman |
-| `squid-exporter` | 9301 (порт egress) | счётчики squid из cache manager: запросы, трафик, время ответа, соединения, память |
+| `egress` (Envoy) | 9902 | метрики Envoy (`/stats/prometheus`): запросы и отказы RBAC, соединения и трафик по хостам (`envoy_cluster_name="DFPCluster_<хост>_<порт>"`), время подключения |
 | `victoria-metrics` | 8428 | метрики, VMUI `/vmui/` |
 | `victoria-logs` | 9428 | логи, VMUI `/select/vmui/` |
 | `victoria-traces` | 10428 | трейсы, VMUI `/select/vmui/`, Jaeger API `/select/jaeger` |
@@ -577,6 +607,13 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
 БД не нужна: пользователи и дашборды — во встроенной SQLite в томе `grafana`. Готовые дашборды
 импортируются по ID (например, Node Exporter Full — `1860`); метки `job`/`instance` коллектор
 восстанавливает из OTLP-атрибутов, поэтому такие дашборды работают.
+
+**Дашборды по умолчанию** — JSON в `settings/monitoring/grafana/dashboards/<папка>/` (сейчас `default/envoy-egress.json`).
+Одноразовый сервис `grafana-dashboards` при старте профиля импортирует их в папку Grafana с тем же именем, **только
+если дашборда с таким uid ещё нет**. Дальше это обычный дашборд: его можно менять и сохранять в UI, правки
+переживают перезапуск. Провижининг Grafana для этого не подходит: с `allowUiUpdates` он перезаписывает правки из
+UI при каждом старте Grafana (проверено). Вернуть версию из файла — удалить дашборд в Grafana и
+`podman start agent-box-grafana-dashboards-1`; сохранить правку из UI в git — Export → JSON и заменить файл.
 
 **Drilldown.** Включены все Drilldown-приложения (меню **Drilldown**), они ставятся в образ и включаются
 `settings/monitoring/grafana/provisioning/plugins/apps.yaml`:
@@ -607,8 +644,8 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile monitoring down
   (`/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service`), где живут все контейнеры, SELinux-метка
   отключена только для него, сокет podman — для имён контейнеров (даёт доступ к podman, поэтому cAdvisor только
   во внутренней сети);
-- squid-exporter работает в сетевом пространстве egress: cache manager доступен только с localhost
-  (`http_access allow localhost manager` в `settings/egress/squid.conf`), порт 9301 публикуется у egress.
+- метрики egress Envoy отдаёт сам на отдельном порту 9902 (только `/stats/prometheus`), отдельный экспортер
+  не нужен; admin Envoy (`:9901`) слушает только localhost внутри контейнера.
 
 Данные — в томах `victoria-metrics`, `victoria-logs`, `victoria-traces`, `grafana` на диске VM.
 Срок хранения — `METRICS_RETENTION` (30d), `LOGS_RETENTION` (14d),
@@ -704,7 +741,7 @@ PowerShell находит его раньше `podman.exe`. Удалить от 
 
 Папка `settings` не смонтирована в VM по пути, который ожидает compose (п. 2, параметр `-v`), или на Windows
 не работает 9p-сервер (перезапустить машину; п. «Проблемы» про gvproxy).
-Та же ошибка с `settings/egress/squid.conf` — у egress (п. 8): без монтирования он не запускается.
+Та же ошибка с `settings/egress/envoy.yaml` — у egress (п. 8): без монтирования он не запускается.
 
 ### `java: command not found` / `orca: command not found` в контейнере
 
@@ -713,8 +750,8 @@ PowerShell находит его раньше `podman.exe`. Удалить от 
 
 ### В контейнере что-то не скачивается, `Could not resolve host`, `fetch failed`, 403
 
-Домена нет в allowlist (п. 8): `podman logs agent-box-egress-1 | findstr DENIED`. `Could not resolve host`
-без записи в логе squid — программа не использует прокси (нужны `HTTPS_PROXY` или свои настройки прокси).
+Домена нет в allowlist (п. 8): `podman logs agent-box-egress-1 | findstr rbac_access_denied`. `Could not resolve host`
+без записи в журнале egress — программа не использует прокси (нужны `HTTPS_PROXY` или свои настройки прокси).
 `orca serve` без `nodejs.org` падает с `the orcad slot ... could not be prepared: fetch failed`.
 
 ## Удаление машины

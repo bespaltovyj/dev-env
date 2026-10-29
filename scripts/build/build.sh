@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и egress.
+# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
 #
 #   ./scripts/build/build.sh                              # всё
 #   ./scripts/build/build.sh --build-arg GO_VERSION=...   # аргументы передаются во все сборки
@@ -8,7 +8,7 @@
 # Пути (images/, .build-logs) считаются от корня репозитория, текущая папка не важна.
 #
 # Переменные: ENGINE (podman), PREFIX (localhost/agent-box), IMAGE (localhost/agent-box:latest),
-#             EGRESS_IMAGE (localhost/agent-box-egress:latest), GRAFANA_IMAGE (localhost/agent-box-grafana:latest),
+#             GRAFANA_IMAGE (localhost/agent-box-grafana:latest),
 #             JOBS (4 параллельные сборки), LOG_DIR (.build-logs)
 set -euo pipefail
 
@@ -18,7 +18,6 @@ cd "$(dirname "$0")/../.."
 ENGINE="${ENGINE:-podman}"
 PREFIX="${PREFIX:-localhost/agent-box}"
 IMAGE="${IMAGE:-localhost/agent-box:latest}"
-EGRESS_IMAGE="${EGRESS_IMAGE:-localhost/agent-box-egress:latest}"
 GRAFANA_IMAGE="${GRAFANA_IMAGE:-localhost/agent-box-grafana:latest}"
 JOBS="${JOBS:-4}"
 LOG_DIR="${LOG_DIR:-.build-logs}"
@@ -100,14 +99,9 @@ mapfile -t FINAL_CONTEXTS < <(context_args "${WAVE1[@]}" "${WAVE2[@]}")
   --build-arg "COMMON_IMAGE=$PREFIX/common:latest" \
   -t "$IMAGE" -f images/Dockerfile . 2>&1 | tee "$LOG_DIR/final.log"
 
-# Прокси для выхода agent в интернет (конфиг монтирует compose-win.yaml из settings/egress)
-echo "== $EGRESS_IMAGE"
-"$ENGINE" build "${COMMON_ARGS[@]}" --build-arg "COMMON_IMAGE=$PREFIX/common:latest" -t "$EGRESS_IMAGE" -f images/egress/Dockerfile images/egress \
-  >"$LOG_DIR/egress.log" 2>&1 || { tail -n 20 "$LOG_DIR/egress.log" >&2; exit 1; }
-
-# Grafana для профиля monitoring: плагин VictoriaLogs ставится при сборке
+# Grafana для профиля monitoring: плагины ставятся при сборке. Egress (Envoy) — готовый образ, не собирается
 echo "== $GRAFANA_IMAGE"
 "$ENGINE" build "${COMMON_ARGS[@]}" -t "$GRAFANA_IMAGE" -f images/monitoring/grafana.Dockerfile images/monitoring \
   >"$LOG_DIR/grafana.log" 2>&1 || { tail -n 20 "$LOG_DIR/grafana.log" >&2; exit 1; }
 
-echo "== готово: $IMAGE, $EGRESS_IMAGE, $GRAFANA_IMAGE"
+echo "== готово: $IMAGE, $GRAFANA_IMAGE"

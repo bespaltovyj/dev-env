@@ -1,0 +1,488 @@
+{
+  "uid": "agent-box-envoy-egress",
+  "title": "Envoy (egress)",
+  "description": "Based on Envoy Global (grafana.com/dashboards/11022): Kubernetes labels replaced with job/envoy_cluster_name, cluster health with the allowlist (RBAC), upstream split by host (dynamic forward proxy sub-clusters), blocked hosts from the egress access log in VictoriaLogs.",
+  "tags": ["agent-box", "envoy", "egress"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "schemaVersion": 39,
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Metrics",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "VictoriaMetrics", "value": "victoria-metrics" },
+        "hide": 0, "refresh": 1, "regex": "", "includeAll": false, "multi": false
+      },
+      {
+        "name": "logs_datasource",
+        "label": "Logs",
+        "type": "datasource",
+        "query": "victoriametrics-logs-datasource",
+        "current": { "text": "VictoriaLogs", "value": "victoria-logs" },
+        "hide": 0, "refresh": 1, "regex": "", "includeAll": false, "multi": false
+      },
+      {
+        "name": "timeWindow",
+        "label": "Window",
+        "type": "custom",
+        "query": "1m,5m,30m,1h,1d",
+        "current": { "text": "5m", "value": "5m" },
+        "options": [
+          { "text": "1m", "value": "1m", "selected": false },
+          { "text": "5m", "value": "5m", "selected": true },
+          { "text": "30m", "value": "30m", "selected": false },
+          { "text": "1h", "value": "1h", "selected": false },
+          { "text": "1d", "value": "1d", "selected": false }
+        ],
+        "allowCustomValue": true,
+        "hide": 0, "includeAll": false, "multi": false
+      },
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(envoy_cluster_upstream_cx_total{job=\"envoy\"}, envoy_cluster_name)",
+        "query": { "qryType": 1, "query": "label_values(envoy_cluster_upstream_cx_total{job=\"envoy\"}, envoy_cluster_name)", "refId": "PrometheusVariableQueryEditor-VariableQuery" },
+        "regex": "/^DFPCluster_.+/",
+        "refresh": 2, "sort": 1, "multi": true, "includeAll": true,
+        "allValue": "DFPCluster_.+",
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    { "type": "row", "title": "Overview", "id": 100, "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "panels": [] },
+    {
+      "type": "stat", "title": "Requests/s", "id": 1,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "requests",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_downstream_rq_total{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2, "noValue": "0" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat", "title": "Blocked in window", "id": 2,
+      "description": "Requests rejected by egress (envoy_http_rbac_denied): domain not in the allowlist or CONNECT not to 443, over the selected timeWindow.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "blocked",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  increase(\n    envoy_http_rbac_denied{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "noValue": "0",
+        "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat", "title": "Active connections", "id": 3,
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "active",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  envoy_http_downstream_cx_active{\n    job=\"envoy\",\n    envoy_http_conn_manager_prefix=\"egress\",\n  }\n) > 0"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "noValue": "0" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat", "title": "Active hosts", "id": 4,
+      "description": "Dynamic forward proxy sub-clusters: one per host:port, kept for sub_cluster_ttl (1h) after the last request.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "hosts",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "count(\n  count by (envoy_cluster_name) (\n    envoy_cluster_upstream_cx_total{\n      job=\"envoy\",\n      envoy_cluster_name=~\"DFPCluster_.+\",\n    }\n  )\n) > 0"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "noValue": "0" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    { "type": "row", "title": "Downstream (agent → egress)", "id": 101, "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "panels": [] },
+    {
+      "type": "timeseries", "title": "Downstream RPS", "id": 5,
+      "gridPos": { "h": 9, "w": 6, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "requests",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_downstream_rq_total{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "requests"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Downstream CPS", "id": 6,
+      "gridPos": { "h": 9, "w": 6, "x": 6, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "connections",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_downstream_cx_total{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "connections"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Downstream Latency", "id": 7,
+      "description": "Time until egress responds. For CONNECT — until the tunnel is established (200), not the tunnel duration.",
+      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "p50",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(\n  0.5,\n  sum by (le) (\n    rate(\n      envoy_http_downstream_rq_time_bucket{\n        job=\"envoy\",\n        envoy_http_conn_manager_prefix=\"egress\",\n      }[$timeWindow]\n    )\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "p90",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(\n  0.9,\n  sum by (le) (\n    rate(\n      envoy_http_downstream_rq_time_bucket{\n        job=\"envoy\",\n        envoy_http_conn_manager_prefix=\"egress\",\n      }[$timeWindow]\n    )\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "p90"
+        },
+        {
+          "refId": "p99",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(\n  0.99,\n  sum by (le) (\n    rate(\n      envoy_http_downstream_rq_time_bucket{\n        job=\"envoy\",\n        envoy_http_conn_manager_prefix=\"egress\",\n      }[$timeWindow]\n    )\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "fillOpacity": 0 } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Downstream Total Connections", "id": 8,
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "active",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  envoy_http_downstream_cx_active{\n    job=\"envoy\",\n    envoy_http_conn_manager_prefix=\"egress\",\n  }\n) > 0",
+          "legendFormat": "active"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+
+    { "type": "row", "title": "Allowlist and responses", "id": 102, "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }, "panels": [] },
+    {
+      "type": "timeseries", "title": "Allowlist: allowed and denied", "id": 9,
+      "description": "RBAC filters in settings/egress/envoy.yaml: allowlist — domain not in the list, connect_port — CONNECT not to 443.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "allowed",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_rbac_allowed{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n      envoy_rbac_http_prefix=\"allowlist_\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "allowed"
+        },
+        {
+          "refId": "denied",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_rbac_denied{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n      envoy_rbac_http_prefix=\"allowlist_\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "denied: not in allowlist"
+        },
+        {
+          "refId": "denied_port",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_http_rbac_denied{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n      envoy_rbac_http_prefix=\"connect_port_\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "denied: CONNECT not to 443"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "denied: not in allowlist" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "denied: CONNECT not to 443" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] }
+        ] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Egress responses by class", "id": 10,
+      "description": "Status codes egress returned to agent: 2xx includes established CONNECT tunnels, 4xx includes allowlist rejections (403). Envoy cannot see site responses inside HTTPS tunnels.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "by_class",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (envoy_response_code_class) (\n  rate(\n    envoy_http_downstream_rq_xx{\n      job=\"envoy\",\n      envoy_http_conn_manager_prefix=\"egress\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "{{envoy_response_code_class}}xx"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "stacking": { "mode": "normal" } } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "2xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] },
+          { "matcher": { "id": "byName", "options": "3xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "blue" } }] },
+          { "matcher": { "id": "byName", "options": "4xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }] },
+          { "matcher": { "id": "byName", "options": "5xx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+
+    { "type": "row", "title": "Blocked hosts (egress access log in VictoriaLogs)", "id": 104, "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }, "panels": [] },
+    {
+      "type": "table", "title": "Blocked hosts over range", "id": 18,
+      "description": "There are no per-host metrics for rejected requests: they never reach a sub-cluster. Data comes from the egress access log (OTLP → VictoriaLogs), requires the monitoring profile.",
+      "gridPos": { "h": 10, "w": 8, "x": 0, "y": 26 },
+      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+      "targets": [
+        {
+          "refId": "blocked_hosts",
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+          "queryType": "stats",
+          "editorMode": "code",
+          "expr": "service.name:egress details:rbac_access_denied* _time:$__range\n| stats by (host) count() as blocked"
+        }
+      ],
+      "transformations": [
+        { "id": "labelsToFields", "options": { "keepLabels": ["host"] } },
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": {
+            "excludeByName": { "Time": true },
+            "indexByName": { "host": 0, "Value": 1 },
+            "renameByName": { "host": "Host", "Value": "Blocked" }
+        } }
+      ],
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "sortBy": [{ "displayName": "Blocked", "desc": true }] }
+    },
+    {
+      "type": "timeseries", "title": "Blocked by host", "id": 19,
+      "gridPos": { "h": 10, "w": 16, "x": 8, "y": 26 },
+      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+      "targets": [
+        {
+          "refId": "blocked_by_host",
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+          "queryType": "statsRange",
+          "editorMode": "code",
+          "expr": "service.name:egress details:rbac_access_denied*\n| stats by (host) count() as blocked",
+          "step": "$timeWindow",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "noValue": "0",
+          "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] } }
+    },
+    {
+      "type": "logs", "title": "Blocked requests log", "id": 20,
+      "description": "LogsQL: service.name:egress details:rbac_access_denied*. All egress requests — drop the details filter.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 36 },
+      "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+      "targets": [
+        {
+          "refId": "blocked_log",
+          "datasource": { "type": "victoriametrics-logs-datasource", "uid": "${logs_datasource}" },
+          "queryType": "instant",
+          "editorMode": "code",
+          "expr": "service.name:egress details:rbac_access_denied*",
+          "maxLines": 1000
+        }
+      ],
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true, "enableLogDetails": true, "dedupStrategy": "none" }
+    },
+
+    { "type": "row", "title": "Upstream (egress → internet) by host", "id": 103, "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 }, "panels": [] },
+    {
+      "type": "timeseries", "title": "RPS by host", "id": 21,
+      "description": "Requests to hosts. One CONNECT tunnel is one request; Envoy cannot see requests inside HTTPS tunnels.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "requests",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    rate(\n      envoy_cluster_upstream_rq_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$timeWindow]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Network by host", "id": 13,
+      "description": "↑ — sent to the host (up), ↓ — received from the host (down, Negative Y). Dashed line — zero.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "sent",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    rate(\n      envoy_cluster_upstream_cx_tx_bytes_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$timeWindow]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "↑ {{host}}"
+        },
+        {
+          "refId": "received",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    rate(\n      envoy_cluster_upstream_cx_rx_bytes_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$timeWindow]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "↓ {{host}}"
+        },
+        {
+          "refId": "sent_total",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(\n  rate(\n    envoy_cluster_upstream_cx_tx_bytes_total{\n      job=\"envoy\",\n      envoy_cluster_name=~\"$host\",\n    }[$timeWindow]\n  )\n) > 0",
+          "interval": "$timeWindow",
+          "hide": true
+        },
+        {
+          "refId": "zero",
+          "datasource": { "type": "__expr__", "uid": "__expr__" },
+          "type": "math",
+          "expression": "$sent_total * 0"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "fillOpacity": 10, "scaleDistribution": { "type": "symlog", "log": 10, "linearThreshold": 1 } } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "^↓.*" }, "properties": [{ "id": "custom.transform", "value": "negative-Y" }] },
+          { "matcher": { "id": "byFrameRefID", "options": "zero" }, "properties": [
+            { "id": "displayName", "value": "0" },
+            { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } },
+            { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [10, 10] } },
+            { "id": "custom.fillOpacity", "value": 0 },
+            { "id": "custom.hideFrom", "value": { "legend": true, "tooltip": true, "viz": false } }
+          ] }
+        ] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Upstream CPS", "id": 11,
+      "description": "New connections to hosts. One CONNECT tunnel is one connection.",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 56 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "connections",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    rate(\n      envoy_cluster_upstream_cx_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$timeWindow]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Upstream Latency (connect, p90)", "id": 12,
+      "description": "TCP connect time to the host. Envoy cannot see response latency inside HTTPS tunnels.",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 56 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "connect_p90",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  histogram_quantile(\n    0.9,\n    sum by (le, envoy_cluster_name) (\n      rate(\n        envoy_cluster_upstream_cx_connect_ms_bucket{\n          job=\"envoy\",\n          envoy_cluster_name=~\"$host\",\n        }[$timeWindow]\n      )\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "interval": "$timeWindow",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "fillOpacity": 0 } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "timeseries", "title": "Upstream Total Connections", "id": 14,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 65 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "active",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    envoy_cluster_upstream_cx_active{\n      job=\"envoy\",\n      envoy_cluster_name=~\"$host\",\n    }\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 10, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "tooltip": { "mode": "multi", "sort": "desc" }, "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["min", "max", "mean", "median", "lastNotNull"] } }
+    },
+    {
+      "type": "table", "title": "Hosts over range", "id": 17,
+      "description": "Connections, traffic and connect failures per host over the whole dashboard time range (time picker, top right).",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 65 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "refId": "connections",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    increase(\n      envoy_cluster_upstream_cx_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$__range]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "format": "table", "instant": true
+        },
+        {
+          "refId": "received",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    increase(\n      envoy_cluster_upstream_cx_rx_bytes_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$__range]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "format": "table", "instant": true
+        },
+        {
+          "refId": "sent",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    increase(\n      envoy_cluster_upstream_cx_tx_bytes_total{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$__range]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "format": "table", "instant": true
+        },
+        {
+          "refId": "connect_fail",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "label_replace(\n  sum by (envoy_cluster_name) (\n    increase(\n      envoy_cluster_upstream_cx_connect_fail{\n        job=\"envoy\",\n        envoy_cluster_name=~\"$host\",\n      }[$__range]\n    )\n  ),\n  \"host\", \"$1:$2\", \"envoy_cluster_name\", \"DFPCluster_(.+)_([0-9]+)\"\n) > 0",
+          "format": "table", "instant": true
+        }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        { "id": "organize", "options": {
+            "excludeByName": { "Time": true, "envoy_cluster_name": true },
+            "indexByName": { "host": 0, "Value #connections": 1, "Value #received": 2, "Value #sent": 3, "Value #connect_fail": 4 },
+            "renameByName": { "host": "Host", "Value #connections": "Connections", "Value #received": "Received", "Value #sent": "Sent", "Value #connect_fail": "Connect failures" }
+        } }
+      ],
+      "fieldConfig": { "defaults": { "decimals": 0 },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Received" }, "properties": [{ "id": "unit", "value": "bytes" }] },
+          { "matcher": { "id": "byName", "options": "Sent" }, "properties": [{ "id": "unit", "value": "bytes" }] }
+        ] },
+      "options": { "sortBy": [{ "displayName": "Connections", "desc": true }] }
+    }
+  ]
+}
