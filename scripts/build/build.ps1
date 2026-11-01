@@ -1,4 +1,4 @@
-# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
+﻿# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
 #
 #   .\scripts\build\build.ps1                                  # всё
 #   .\scripts\build\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'   # аргументы передаются во все сборки
