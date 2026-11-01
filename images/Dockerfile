@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ================================================================ agent-box
-# Изолированное окружение для ИИ-агентов: Orca, Claude Code, dcg, Node.js, Python 3, uv, ruff,
+# Изолированное окружение для ИИ-агентов: Orca, Claude Code, Kimi Code CLI, dcg, Node.js, Python 3, uv, ruff,
 # pytest, Java 17/21/25 (Temurin), Maven, Gradle, Go, kubectl, Helm.
 #
 # Каждый компонент собирается отдельным образом из images/<группа>/<name>.Dockerfile
@@ -24,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       git openssh-client build-essential \
-      tini tmux less procps jq ripgrep \
+      tini tmux less procps jq ripgrep fd-find \
       python3 python3-pip python3-venv \
       postgresql-client \
  && rm -rf /var/lib/apt/lists/*
@@ -39,6 +39,7 @@ RUN --mount=type=bind,from=orca,source=/opt/orca.deb,target=/tmp/orca.deb \
 # ================================================================ компоненты
 COPY --from=node    /opt/node/       /usr/local/
 COPY --from=claude  /opt/bin/claude  /usr/local/bin/claude
+COPY --from=kimi    /opt/bin/kimi    /usr/local/bin/kimi
 COPY --from=dcg     /opt/bin/dcg     /usr/local/bin/dcg
 COPY --from=uv      /opt/bin/        /usr/local/bin/
 COPY --from=ruff    /opt/bin/ruff    /usr/local/bin/ruff
@@ -110,6 +111,10 @@ ENV KUBECONFIG=/home/agent/.kube/config
 # Claude Code: версия фиксируется образом
 ENV DISABLE_AUTOUPDATER=1
 
+# Kimi Code CLI: версия фиксируется образом, автообновление и телеметрия выключены
+ENV KIMI_CODE_NO_AUTO_UPDATE=1 \
+    KIMI_DISABLE_TELEMETRY=1
+
 ENV PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/go/bin:/usr/local/go/bin:/usr/lib/jvm/temurin-25/bin:/opt/maven/bin:/opt/gradle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Login-shell (tmux, bash -l) берёт PATH из /etc/profile — вернуть PATH образа
@@ -118,7 +123,7 @@ RUN echo "export PATH=\"$PATH\"" > /etc/profile.d/00-agent-box-path.sh
 # ================================================================ проверка
 # Временный HOME, чтобы проверки не оставили файлов в /home/agent
 RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
- && node --version && npm --version && claude --version && dcg --version \
+ && node --version && npm --version && claude --version && dcg --version && kimi --version \
  && python3 --version && pip3 --version && uv --version && ruff --version && pytest --version \
  && git --version && gcc --version | sed -n 1p \
  && java -version && mvn --version && gradle --version --no-daemon \
@@ -131,7 +136,7 @@ RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
 RUN groupadd --gid "${USER_GID}" agent \
  && useradd --uid "${USER_UID}" --gid agent --create-home --shell /bin/bash agent \
  && mkdir -p /repos \
-      /home/agent/.claude /home/agent/.config/orca/orcad-artifacts /home/agent/.orca \
+      /home/agent/.claude /home/agent/.kimi-code /home/agent/.config/orca/orcad-artifacts /home/agent/.orca \
       /home/agent/.local/state/bash /home/agent/orca/workspaces \
  && chown agent:agent /repos \
  && chown -R agent:agent /home/agent

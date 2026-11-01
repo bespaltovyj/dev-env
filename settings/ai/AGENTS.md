@@ -1,10 +1,31 @@
-# agent-box: правила для Claude Code
+# Окружение agent-box
+
+## Git-репозитории
+- Все git-репозитории клонировать только в `/repos/<имя-репозитория>` (`$REPOS_DIR`), например
+  `git clone https://github.com/org/app.git /repos/app`. Не клонировать в домашнюю папку, `/tmp` и другие места.
+- `/repos` — постоянное хранилище: переживает пересоздание контейнера. Остальное вне `/repos` и домашней папки пропадёт.
+
+## PostgreSQL
+- PostgreSQL 18 доступен по адресу `postgres:5432`; пользователь, пароль и БД по умолчанию — в переменных
+  `$POSTGRES_USER`, `$POSTGRES_PASSWORD`, `$POSTGRES_DB`. Для своих задач создавать отдельные базы
+  (`createdb -h postgres -U "$POSTGRES_USER" <имя>`), а не писать в базу по умолчанию.
+
+## Сеть
+- Интернет только через прокси с allowlist: доступны GitHub (только https, не ssh), реестры npm, PyPI, Go,
+  Maven Central, Gradle, Kubernetes/Helm, Anthropic и Kimi/Moonshot (api.kimi.com, api.kimi.ai,
+  api.moonshot.cn, api.moonshot.ai, auth.kimi.com). Ответ 403 от прокси — домена нет в списке, обходить не пытаться.
+
+## Kimi Code CLI
+- Конфиг, логин, сессии и история CLI — в `~/.kimi-code` (том `kimi`): переживают пересоздание контейнера.
+- Автообновление отключено в образе (`KIMI_CODE_NO_AUTO_UPDATE=1`): версия фиксируется образом и меняется
+  только пересборкой. `kimi upgrade` не запускать.
 
 ## Дашборды Grafana
 
-Grafana профиля monitoring: http://127.0.0.1:3000 (README.md, п. 10). Дашборды создаются и правятся через API
-(`POST /api/dashboards/db` с `"overwrite": true`). Каждый дашборд, который создаётся или правится, должен
-соответствовать правилам ниже; правка существующего дашборда — повод привести его к ним целиком.
+Grafana профиля monitoring: из контейнера — `http://grafana:3000`, с хоста — http://127.0.0.1:3000 (README.md,
+п. 10). Логин и пароль — `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD` из `.env`. Дашборды создаются и правятся
+через API (`POST /api/dashboards/db` с `"overwrite": true`). Каждый дашборд, который создаётся или правится,
+должен соответствовать правилам ниже; правка существующего дашборда — повод привести его к ним целиком.
 
 Дашборды по умолчанию — JSON-модели (объект `dashboard`, без `id`, с постоянным `uid`) в
 `settings/monitoring/grafana/dashboards/<папка>/<имя>.json`; сервис `grafana-dashboards` импортирует их, только если

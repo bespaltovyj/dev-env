@@ -1,4 +1,4 @@
-﻿# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
+# Сборка agent-box: common -> компоненты (параллельно) -> итоговый образ и Grafana.
 #
 #   .\scripts\build\build.ps1                                  # всё
 #   .\scripts\build\build.ps1 -BuildArgs 'GO_VERSION=1.27.3'   # аргументы передаются во все сборки
@@ -25,7 +25,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path.TrimEnd('\')
 Set-Location $Root
 
 # Волны: внутри волны компоненты собираются параллельно
-$Wave1 = @('node', 'jdk17', 'jdk21', 'jdk25', 'maven', 'gradle', 'go', 'uv', 'ruff', 'kubectl', 'helm', 'orca', 'dcg', 'claude')
+$Wave1 = @('node', 'jdk17', 'jdk21', 'jdk25', 'maven', 'gradle', 'go', 'uv', 'ruff', 'kubectl', 'helm', 'orca', 'dcg', 'claude', 'kimi')
 $Wave2 = @('pytest')   # зависит от uv
 
 # Зависимости компонентов от других компонентов

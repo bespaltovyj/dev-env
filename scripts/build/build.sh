@@ -24,7 +24,7 @@ LOG_DIR="${LOG_DIR:-.build-logs}"
 EXTRA_ARGS=("$@")
 
 # Волны: внутри волны компоненты собираются параллельно
-WAVE1=(node jdk17 jdk21 jdk25 maven gradle go uv ruff kubectl helm orca dcg claude)
+WAVE1=(node jdk17 jdk21 jdk25 maven gradle go uv ruff kubectl helm orca dcg claude kimi)
 WAVE2=(pytest)   # зависит от uv
 
 # Зависимости компонентов от других компонентов

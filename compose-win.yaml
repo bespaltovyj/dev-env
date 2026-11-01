@@ -84,10 +84,14 @@ services:
       # - ./data/repos:/repos
       # Worktree Orca (workspaceDir по умолчанию ~/orca/workspaces)
       - orca-worktrees:/home/agent/orca/workspaces
-      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json;
-      # инструкции агентам — статический settings/claude/CLAUDE.md, только чтение
+      # Claude Code контейнера (не ~/.claude хоста): логин, сессии, история, settings.json
       - claude:/home/agent/.claude
-      - ./settings/claude/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
+      # Kimi Code CLI контейнера (не ~/.kimi-code хоста): логин, сессии, история, config.toml
+      - kimi:/home/agent/.kimi-code
+      # Инструкции агентам — статический settings/ai (единый AGENTS.md, CLAUDE.md ссылается на него), только чтение
+      - ./settings/ai/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
+      - ./settings/ai/AGENTS.md:/home/agent/.claude/AGENTS.md:ro
+      - ./settings/ai/AGENTS.md:/home/agent/.kimi-code/AGENTS.md:ro
       # Orca: сессии, рабочие пространства, история терминалов, сопряжение, секреты
       - orca-config:/home/agent/.config/orca
       - orca-home:/home/agent/.orca
@@ -179,6 +183,7 @@ services:
   #     - repos:/volumes/repos:ro
   #     - orca-worktrees:/volumes/orca-worktrees:ro
   #     - claude:/volumes/claude:ro
+  #     - kimi:/volumes/kimi:ro
   #     - orca-config:/volumes/orca-config:ro
   #     - orca-home:/volumes/orca-home:ro
   #     - bash-history:/volumes/bash-history:ro
@@ -411,6 +416,7 @@ volumes:
   repos: {}
   orca-worktrees: {}
   claude: {}
+  kimi: {}
   orca-config: {}
   orca-home: {}
   orcad-artifacts: {}

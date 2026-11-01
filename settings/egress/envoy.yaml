@@ -148,6 +148,11 @@ static_resources:
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*anthropic\.com(:(80|443))?$' } } }
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*claude\.ai(:(80|443))?$' } } }
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*claude\.com(:(80|443))?$' } } }
+                              # Kimi Code CLI: API (api-key и OAuth-логин) — Kimi Code и Kimi Open Platform
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*kimi\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*kimi\.ai(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*moonshot\.ai(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*moonshot\.cn(:(80|443))?$' } } }
                               # Langfuse Cloud EU: трейсы Claude Code (хук Stop)
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^cloud\.langfuse\.com(:(80|443))?$' } } }
                               # Orca: orca serve при первом запуске скачивает рантайм Node.js для orcad

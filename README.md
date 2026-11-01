@@ -50,9 +50,11 @@ Orca на хосте подключается к `orca serve` в контейн�
 compose-win.yaml                    запуск на Windows (Podman + Hyper-V): данные в named volume (п. 6)
 compose-unix.yaml                   запуск на Linux/macOS: данные в data/ («Linux и macOS»)
 .env.example                        переменные для compose (п. 6)
+AGENTS.md                           обзор проекта для ИИ-агентов (в корне репозитория)
 settings/                           только статические настройки, безопасные для git
 ├── apt/debian.sources              источники apt (только https), встраивается в образ common
-├── claude/CLAUDE.md                инструкции агентам, монтируется в ~/.claude/CLAUDE.md только для чтения
+├── ai/AGENTS.md, CLAUDE.md         инструкции агентам: единый AGENTS.md (CLAUDE.md ссылается на него),
+                                    монтируются в ~/.claude и ~/.kimi-code только для чтения
 ├── managed-settings.json           управляемые настройки Claude Code (хуки dcg и Langfuse, без телеметрии), встраивается в образ
 ├── egress/envoy.yaml               конфиг egress (Envoy) с allowlist доменов — монтируется в egress (п. 8)
 ├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час («Резервная копия томов»)
@@ -109,7 +111,7 @@ scripts/build/
 3.  cd "$AGENT_BOX_DIR"   # перейти в папку проекта
 4.  podman machine init --cpus 6 --memory 8192 --disk-size 100 -v "$AGENT_BOX_DIR:$AGENT_BOX_DIR"   # только macOS: создание машины, папка проекта видна VM
 5.  podman machine start   # только macOS: запуск машины
-6.  mkdir -p data/{repos,orca-worktrees,claude,orca/config,orca/home,bash,postgres}   # папки для данных контейнеров (мониторинг — ещё data/monitoring/*)
+6.  mkdir -p data/{repos,orca-worktrees,claude,kimi,orca/config,orca/home,bash,postgres}   # папки для данных контейнеров (мониторинг — ещё data/monitoring/*)
 7.  ./scripts/build/build.sh   # сборка образов
 8.  cp .env.example .env   # инициализация env переменных для контейнеров (заполнить POSTGRES_PASSWORD, ключи)
 9.  podman compose -f "$AGENT_BOX_DIR/compose-unix.yaml" up -d --force-recreate   # запуск контейнеров (мониторинг: --profile monitoring)
@@ -142,7 +144,7 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile backup up -d
 
 - раз в час (`BACKUP_INTERVAL` в `.env`, секунды) снимает дамп PostgreSQL (`pg_dumpall`) и отпечаток всех файлов
   томов (путь, размер, время изменения, права); если с прошлой копии ничего не изменилось — пропускает;
-- иначе пишет `data\backup\<дата-время>\`: `<том>.tar` для `repos`, `orca-worktrees`, `claude`, `orca-config`,
+- иначе пишет `data\backup\<дата-время>\`: `<том>.tar` для `repos`, `orca-worktrees`, `claude`, `kimi`, `orca-config`,
   `orca-home`, `bash-history`, `grafana` и `postgres.sql`; готовая копия помечается файлом `COMPLETE`;
 - хранит 2 последние копии (`BACKUP_KEEP`), старые и незавершённые удаляет;
 - кэши (`agent-home`, `orcad-artifacts`) и Victoria* (временные ряды со сроком хранения) не копирует.
@@ -176,6 +178,7 @@ podman pause agent-box-agent-1 agent-box-postgres-1
 podman volume export agent-box_repos            -o A:\orca\docker\data\backup\manual\repos.tar
 podman volume export agent-box_orca-worktrees   -o A:\orca\docker\data\backup\manual\orca-worktrees.tar
 podman volume export agent-box_claude           -o A:\orca\docker\data\backup\manual\claude.tar
+podman volume export agent-box_kimi             -o A:\orca\docker\data\backup\manual\kimi.tar
 podman volume export agent-box_orca-config      -o A:\orca\docker\data\backup\manual\orca-config.tar
 podman volume export agent-box_orca-home        -o A:\orca\docker\data\backup\manual\orca-home.tar
 podman volume export agent-box_bash-history     -o A:\orca\docker\data\backup\manual\bash-history.tar
@@ -347,7 +350,10 @@ podman compose -f A:\orca\docker\compose-win.yaml down                          
 
 `~/.claude` контейнера — том `claude` (`CLAUDE_CONFIG_DIR`, туда же попадает `.claude.json`):
 логин, сессии, история и `settings.json` (в него пишут Orca и сам Claude) переживают пересоздание контейнера.
-Поверх него только для чтения монтируется статический `settings/claude/CLAUDE.md` из git: агенты его не изменят.
+`~/.kimi-code` контейнера — том `kimi`: логин, сессии, история и `config.toml` Kimi Code CLI переживают
+пересоздание контейнера. Инструкции агентам — единый статический `settings/ai/AGENTS.md` из git (только чтение),
+смонтированный в `~/.kimi-code/AGENTS.md` и `~/.claude/AGENTS.md`; `settings/ai/CLAUDE.md` ссылается на него,
+чтобы Claude Code читал те же правила из `~/.claude/CLAUDE.md`.
 Это отдельный конфиг, не `~/.claude` хоста: хуки хоста с путями Windows в Linux не работают, а запись агентов
 в конфиг хоста дала бы им выполнение команд на Windows.
 
@@ -360,7 +366,9 @@ subuid в VM, а не пользователь `core`, которому прин
 | `/repos` | `repos` | git-репозитории всех агентов (рабочая папка контейнера, `$REPOS_DIR`) |
 | `~/orca/workspaces` | `orca-worktrees` | worktree, которые создаёт Orca (её `workspaceDir` по умолчанию) |
 | `~/.claude` | `claude` | логин, сессии, история, `settings.json` Claude Code |
-| `~/.claude/CLAUDE.md` | `settings/claude/CLAUDE.md` с Windows, только чтение | инструкции агентам (в git) |
+| `~/.claude/CLAUDE.md`, `~/.claude/AGENTS.md` | `settings/ai/CLAUDE.md`, `settings/ai/AGENTS.md` с Windows, только чтение | инструкции агентам (в git): единый AGENTS.md, CLAUDE.md ссылается на него |
+| `~/.kimi-code` | `kimi` | логин, сессии, история, config.toml Kimi Code CLI |
+| `~/.kimi-code/AGENTS.md` | `settings/ai/AGENTS.md` с Windows, только чтение | инструкции агентам Kimi (в git) |
 | `~/.config/orca`, `~/.orca` | `orca-config`, `orca-home` | сессии и рабочие пространства Orca, история терминалов, сопряжение, секреты orcad |
 | `~/.config/orca/orcad-artifacts` | `orcad-artifacts` | рантайм orcad (~150 МБ), скачивается с nodejs.org |
 | `~/.local/state/bash` | `bash-history` | история bash (`HISTFILE`) |
@@ -371,8 +379,8 @@ subuid в VM, а не пользователь `core`, которому прин
 машины — резервная копия: «Резервная копия томов» после быстрого старта. Содержимое `/home/agent` из образа
 копируется в том только при первом создании: изменения домашней папки в новом образе в существующий том не попадут.
 
-Агенты клонируют репозитории в `/repos`: так написано в `settings/claude/CLAUDE.md` (инструкции Claude Code,
-правятся без пересборки), `/repos` — рабочая папка контейнера, путь есть в `$REPOS_DIR`. Это правило для агентов,
+Агенты клонируют репозитории в `/repos`: так написано в `settings/ai/AGENTS.md`
+(инструкции агентам, правятся без пересборки), `/repos` — рабочая папка контейнера, путь есть в `$REPOS_DIR`. Это правило для агентов,
 а не запрет: клонировать в другое место технически можно, но такие репозитории пропадут при пересоздании контейнера.
 
 Тома, созданные раньше с `userns_mode: keep-id`, принадлежат другому uid VM. При переходе на эту схему их нужно
@@ -510,7 +518,8 @@ podman exec agent-box-agent-1 tmux new -d -s orca "orca-ide serve --port 6769 --
 Проверено: claude (api.anthropic.com), npm, pip, go, git (https), Maven, Gradle и `orca serve` работают;
 `example.com` → 403; прямой выход мимо прокси → нет соединения.
 
-Стартовый список: Anthropic/Claude, `nodejs.org` (рантайм для `orca serve`), Langfuse, GitHub, npm, PyPI, Go proxy,
+Стартовый список: Anthropic/Claude, Kimi/Moonshot (api.kimi.com, api.kimi.ai, api.moonshot.cn, api.moonshot.ai),
+`nodejs.org` (рантайм для `orca serve`), Langfuse, GitHub, npm, PyPI, Go proxy,
 Maven Central, Gradle, Kubernetes/Helm. Формат — регулярное выражение по `:authority` (`host` или `host:port`):
 `^([a-z0-9-]+\.)*example\.com(:(80|443))?$` — домен и поддомены, `^example\.com(:(80|443))?$` — только сам домен.
 
@@ -662,7 +671,7 @@ UI при каждом старте Grafana (проверено). Вернуть
 
 - Пользователь, пароль и БД — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` в `.env`. Они применяются только
   при первом запуске, когда том `postgres` пуст; потом пароль меняется через `ALTER USER`. Переменные из `.env`
-  видны и в agent, поэтому агенты подключаются без отдельной настройки (`settings/claude/CLAUDE.md`).
+  видны и в agent, поэтому агенты подключаются без отдельной настройки (`settings/ai/AGENTS.md`).
 - Данные — том `postgres`. В образе 18 `PGDATA=/var/lib/postgresql/18/docker`, поэтому монтируется
   родитель `/var/lib/postgresql`: обновление на 19 сможет положить данные рядом в `19/docker`.
 - Нет выхода в интернет: только сеть `agent-internal`.
@@ -680,7 +689,7 @@ Linux (rootless podman без VM) и, с оговорками, macOS (podman mac
 
 | | `compose-win.yaml` | `compose-unix.yaml` |
 |---|---|---|
-| `repos`, worktree Orca, `~/.claude`, Orca, история bash | named volume | `data/repos`, `data/orca-worktrees`, `data/claude`, `data/orca/{config,home}`, `data/bash` |
+| `repos`, worktree Orca, `~/.claude`, `~/.kimi-code`, Orca, история bash | named volume | `data/repos`, `data/orca-worktrees`, `data/claude`, `data/kimi`, `data/orca/{config,home}`, `data/bash` |
 | PostgreSQL, Victoria*, Grafana | named volume | `data/postgres`, `data/monitoring/*` |
 | Пользователь | uid 1000 контейнера = subuid в VM | `userns_mode: keep-id:uid=1000,gid=1000`: ваш пользователь хоста = uid 1000 в контейнерах, файлы в `data/` — ваши |
 | Резервная копия | сервис `backup` (профиль, выключен) | не нужна отдельно: копировать `data/` обычными средствами, PostgreSQL — `pg_dumpall` |
