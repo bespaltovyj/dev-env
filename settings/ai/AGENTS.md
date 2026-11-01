@@ -22,7 +22,7 @@
 
 ## Дашборды Grafana
 
-Grafana профиля monitoring: из контейнера — `http://grafana:3000`, с хоста — http://127.0.0.1:3000 (README.md,
+Grafana профиля monitoring: из контейнера — `http://grafana:3000`, с хоста — http://127.0.0.1:3000 (FAQ.md,
 п. 10). Логин и пароль — `GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD` из `.env`. Дашборды создаются и правятся
 через API (`POST /api/dashboards/db` с `"overwrite": true`). Каждый дашборд, который создаётся или правится,
 должен соответствовать правилам ниже; правка существующего дашборда — повод привести его к ним целиком.

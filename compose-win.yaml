@@ -1,6 +1,6 @@
 # ================================================================ agent-box: Windows (Podman + Hyper-V)
 # Запуск agent-box на Windows. Изменяемые данные — в named volume на диске VM: папки Windows по 9p
-# не хранят владельца и права Linux (README.md, п. 2). Для Linux/macOS с данными в ./data — compose-unix.yaml.
+# не хранят владельца и права Linux (FAQ.md, п. 2). Для Linux/macOS с данными в ./data — compose-unix.yaml.
 # Формат Compose Specification: работает с `docker compose` и `podman compose`.
 # Образ собирается заранее скриптом scripts/build/build.ps1 / build.sh.
 #
@@ -68,7 +68,7 @@ services:
     # ============================================================ данные
     # Все изменяемые данные — в named volume на диске VM (обычная файловая система Linux).
     # Удаляются только `down -v`, `podman volume rm` и пересозданием машины; резервная копия —
-    # podman volume export (README.md, «Резервная копия томов»).
+    # podman volume export (FAQ.md, «Резервная копия томов»).
     # Podman отдаёт новый том пользователю контейнера (agent), userns keep-id не нужен:
     # uid 1000 в контейнере — непривилегированный subuid в VM, а не пользователь, владеющий podman
     volumes:
@@ -410,7 +410,7 @@ networks:
     internal: true
 
 # Named volume на диске VM. Имена в podman: agent-box_<имя> (podman volume ls).
-# Резервная копия: podman volume export (README.md, «Резервная копия томов»)
+# Резервная копия: podman volume export (FAQ.md, «Резервная копия томов»)
 volumes:
   agent-home: {}
   repos: {}

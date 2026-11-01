@@ -1,7 +1,7 @@
 # agent-box: сведения о проекте для ИИ-агентов
 
-Краткий обзор для агента, работающего в этом репозитории. Источник правды по эксплуатации — README.md,
-инструкции агентам внутри контейнера — `settings/ai/AGENTS.md`.
+Краткий обзор для агента, работающего в этом репозитории. Архитектура и быстрый старт — README.md,
+детальное описание и разбор проблем — FAQ.md, инструкции агентам внутри контейнера — `settings/ai/AGENTS.md`.
 
 ## Что это
 
@@ -18,7 +18,7 @@ agent через gvproxy/hvsock (порт 6769 на 127.0.0.1).
   новая строка в allowlist + `podman restart agent-box-egress-1`. Отказы видны в
   `podman logs agent-box-egress-1` (`rbac_access_denied`).
 - Изменяемые данные — только в named volume на диске VM (`compose-win.yaml`). Папки Windows, подключённые
-  по 9p, не хранят владельца, права и блокировки — на них падают git, Orca и PostgreSQL (README п. 2).
+  по 9p, не хранят владельца, права и блокировки — на них падают git, Orca и PostgreSQL (FAQ.md, п. 2).
   `compose-unix.yaml` — вариант для Linux/macOS с данными в `./data` на хосте.
 - Сборка — `scripts/build/build.ps1` / `build.sh`: `common` → компоненты `images/<группа>/<name>.Dockerfile`
   (параллельно, волны) → итоговый `images/Dockerfile`. Сборке нужна запущенная машина, но не права
@@ -34,6 +34,7 @@ agent через gvproxy/hvsock (порт 6769 на 127.0.0.1).
 ## Структура
 
 - `compose-win.yaml`, `compose-unix.yaml` — два варианта запуска одного набора сервисов.
+- `FAQ.md` — детальное описание (создание машины, тома и копии, egress, Orca, мониторинг, PostgreSQL) и разбор проблем.
 - `images/` — Dockerfile'ы: `common/common.Dockerfile` (база: Debian + curl), `ai/` (orca, claude, kimi,
   dcg), `js`, `jvm`, `python`, `go`, `k8s`, `monitoring` (Grafana), итоговый `Dockerfile` собирает всё
   через `--build-context` из образов компонентов.
@@ -58,6 +59,7 @@ podman logs agent-box-egress-1 | findstr rbac_access_denied     :: чего не
 
 ## Конвенции документации
 
-README.md — основная документация, ведётся на русском; всё, что видно в UI Grafana (дашборды, панели,
-легенды), — только на английском (правила оформления — в `settings/ai/AGENTS.md`). Изменения схемы томов,
-сборки или сети требуют синхронных правок README и, при необходимости, `settings/ai/AGENTS.md`.
+README.md — архитектура и быстрый старт; FAQ.md — основная документация, ведётся на русском; всё, что видно
+в UI Grafana (дашборды, панели, легенды), — только на английском (правила оформления — в `settings/ai/AGENTS.md`).
+Изменения схемы томов, сборки или сети требуют синхронных правок README/FAQ.md и, при необходимости,
+`settings/ai/AGENTS.md`.
