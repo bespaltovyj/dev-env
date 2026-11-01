@@ -28,8 +28,10 @@ agent через gvproxy/hvsock (порт 6769 на 127.0.0.1).
 - `settings/` — только статика, безопасная для git; секреты — в `.env` (не в git).
 - Работа в контейнере — через tmux: сессия `orca` держит `orca-ide serve`, работа идёт в сессии `main`
   (`podman compose -f compose-win.yaml exec agent tmux new -A -s main`).
-- Агенты в контейнере: Claude Code (`claude`) и Kimi Code CLI (`kimi`, конфиг в `~/.kimi-code`, том `kimi`).
-  Единые инструкции им — `settings/ai/AGENTS.md`, смонтированный в `~/.claude` и `~/.kimi-code` (только чтение).
+- Агенты в контейнере: Claude Code (`claude`), Kimi Code CLI (`kimi`), Codex (`codex`), Gemini CLI (`gemini`),
+  Qwen Code (`qwen`), opencode (`opencode`); конфиги — в named volume (`claude`, `kimi`, `codex`, `gemini`,
+  `qwen`, `opencode`). Единые инструкции им — `settings/ai/AGENTS.md`, смонтированный в `~/.claude`
+  и `~/.kimi-code` (только чтение).
 
 ## Структура
 
@@ -43,7 +45,8 @@ agent через gvproxy/hvsock (порт 6769 на 127.0.0.1).
   хук Stop из управляемых настроек).
 - `settings/ai/` — `AGENTS.md` (единые инструкции агентам) и `CLAUDE.md` (ссылка на него через `@import`).
 - `settings/egress/envoy.yaml` — allowlist egress; `settings/managed-settings.json` — управляемые настройки
-  Claude Code (хуки dcg и Langfuse, без телеметрии); `settings/monitoring/` — otel-collector, otel-agent,
+  Claude Code (хуки dcg и Langfuse, без телеметрии); `settings/opencode/opencode.json` — управляемые настройки
+  opencode (монтируется в /etc/opencode, только чтение); `settings/monitoring/` — otel-collector, otel-agent,
   vmauth, Grafana (provisioning, дашборды по умолчанию); `settings/backup/backup.sh` — копии томов раз в час.
 - `data/backup/` — не в git: резервные копии томов (профиль `backup` по умолчанию выключен).
 

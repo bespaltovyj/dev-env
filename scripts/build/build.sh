@@ -24,11 +24,11 @@ LOG_DIR="${LOG_DIR:-.build-logs}"
 EXTRA_ARGS=("$@")
 
 # Волны: внутри волны компоненты собираются параллельно
-WAVE1=(node jdk17 jdk21 jdk25 maven gradle go uv ruff kubectl helm orca dcg claude kimi)
-WAVE2=(pytest)   # зависит от uv
+WAVE1=(node jdk17 jdk21 jdk25 maven gradle go uv ruff kubectl helm orca dcg claude kimi codex opencode)
+WAVE2=(pytest gemini qwen)   # pytest зависит от uv, gemini и qwen — от node
 
 # Зависимости компонентов от других компонентов
-declare -A DEPS=([pytest]="uv")
+declare -A DEPS=([pytest]="uv" [gemini]="node" [qwen]="node")
 
 COMMON_ARGS=()
 if [[ "$ENGINE" == podman ]]; then

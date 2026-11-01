@@ -88,10 +88,22 @@ services:
       - claude:/home/agent/.claude
       # Kimi Code CLI контейнера (не ~/.kimi-code хоста): логин, сессии, история, config.toml
       - kimi:/home/agent/.kimi-code
+      # Codex CLI (OpenAI): конфиг, авторизация, сессии
+      - codex:/home/agent/.codex
+      # Gemini CLI (Google): настройки, OAuth
+      - gemini:/home/agent/.gemini
+      # Qwen Code (Alibaba): настройки, OAuth
+      - qwen:/home/agent/.qwen
+      # opencode: авторизация и данные (конфиг — ~/.config/opencode, в томе agent-home)
+      - opencode:/home/agent/.local/share/opencode
       # Инструкции агентам — статический settings/ai (единый AGENTS.md, CLAUDE.md ссылается на него), только чтение
       - ./settings/ai/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
       - ./settings/ai/AGENTS.md:/home/agent/.claude/AGENTS.md:ro
       - ./settings/ai/AGENTS.md:/home/agent/.kimi-code/AGENTS.md:ro
+      # Управляемые настройки opencode (autoupdate выключен), только чтение
+      - ./settings/opencode/opencode.json:/etc/opencode/opencode.json:ro
+      # Управляемые настройки Claude Code (хуки dcg и Langfuse нельзя отключить из ~/.claude), только чтение
+      - ./settings/managed-settings.json:/etc/claude-code/managed-settings.json:ro
       # Orca: сессии, рабочие пространства, история терминалов, сопряжение, секреты
       - orca-config:/home/agent/.config/orca
       - orca-home:/home/agent/.orca
@@ -184,6 +196,10 @@ services:
   #     - orca-worktrees:/volumes/orca-worktrees:ro
   #     - claude:/volumes/claude:ro
   #     - kimi:/volumes/kimi:ro
+  #     - codex:/volumes/codex:ro
+  #     - gemini:/volumes/gemini:ro
+  #     - qwen:/volumes/qwen:ro
+  #     - opencode:/volumes/opencode:ro
   #     - orca-config:/volumes/orca-config:ro
   #     - orca-home:/volumes/orca-home:ro
   #     - bash-history:/volumes/bash-history:ro
@@ -417,6 +433,10 @@ volumes:
   orca-worktrees: {}
   claude: {}
   kimi: {}
+  codex: {}
+  gemini: {}
+  qwen: {}
+  opencode: {}
   orca-config: {}
   orca-home: {}
   orcad-artifacts: {}

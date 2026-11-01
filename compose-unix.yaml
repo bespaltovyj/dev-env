@@ -6,7 +6,7 @@
 # Формат Compose Specification. Образ собирается заранее скриптом scripts/build/build.sh.
 #
 #   cp .env.example .env                          # заполнить переменные
-#   mkdir -p data/{repos,orca-worktrees,claude,kimi,orca/config,orca/home,bash,postgres}
+#   mkdir -p data/{repos,orca-worktrees,claude,kimi,codex,gemini,qwen,opencode,orca/config,orca/home,bash,postgres}
 #   podman compose -f compose-unix.yaml up -d
 #   podman compose -f compose-unix.yaml exec agent tmux new -A -s main   # подключиться (повторно — к той же сессии)
 #   podman compose -f compose-unix.yaml down
@@ -86,10 +86,22 @@ services:
       - ./data/claude:/home/agent/.claude
       # Kimi Code CLI контейнера: логин, сессии, история, config.toml
       - ./data/kimi:/home/agent/.kimi-code
+      # Codex CLI (OpenAI): конфиг, авторизация, сессии
+      - ./data/codex:/home/agent/.codex
+      # Gemini CLI (Google): настройки, OAuth
+      - ./data/gemini:/home/agent/.gemini
+      # Qwen Code (Alibaba): настройки, OAuth
+      - ./data/qwen:/home/agent/.qwen
+      # opencode: авторизация и данные (конфиг — ~/.config/opencode, в томе agent-home)
+      - ./data/opencode:/home/agent/.local/share/opencode
       # Инструкции агентам — статический settings/ai (единый AGENTS.md, CLAUDE.md ссылается на него), только чтение
       - ./settings/ai/CLAUDE.md:/home/agent/.claude/CLAUDE.md:ro
       - ./settings/ai/AGENTS.md:/home/agent/.claude/AGENTS.md:ro
       - ./settings/ai/AGENTS.md:/home/agent/.kimi-code/AGENTS.md:ro
+      # Управляемые настройки opencode (autoupdate выключен), только чтение
+      - ./settings/opencode/opencode.json:/etc/opencode/opencode.json:ro
+      # Управляемые настройки Claude Code (хуки dcg и Langfuse нельзя отключить из ~/.claude), только чтение
+      - ./settings/managed-settings.json:/etc/claude-code/managed-settings.json:ro
       # Orca: сессии, рабочие пространства, история терминалов, сопряжение, секреты
       - ./data/orca/config:/home/agent/.config/orca
       - ./data/orca/home:/home/agent/.orca

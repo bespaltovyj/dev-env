@@ -153,6 +153,17 @@ static_resources:
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*kimi\.ai(:(80|443))?$' } } }
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*moonshot\.ai(:(80|443))?$' } } }
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*moonshot\.cn(:(80|443))?$' } } }
+                              # Codex CLI (OpenAI): API и логин ChatGPT-аккаунтом
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*openai\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*chatgpt\.com(:(80|443))?$' } } }
+                              # Gemini CLI (Google): API и OAuth-логин
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^generativelanguage\.googleapis\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^accounts\.google\.com(:(80|443))?$' } } }
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^oauth2\.googleapis\.com(:(80|443))?$' } } }
+                              # Qwen Code (Alibaba): DashScope API
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*dashscope(\.aliyuncs|\.alibabacloud)\.com(:(80|443))?$' } } }
+                              # opencode: шлюз бесплатных моделей (zen) и сервисы opencode.ai
+                              - header: { name: ":authority", string_match: { safe_regex: { regex: '^([a-z0-9-]+\.)*opencode\.ai(:(80|443))?$' } } }
                               # Langfuse Cloud EU: трейсы Claude Code (хук Stop)
                               - header: { name: ":authority", string_match: { safe_regex: { regex: '^cloud\.langfuse\.com(:(80|443))?$' } } }
                               # Orca: orca serve при первом запуске скачивает рантайм Node.js для orcad

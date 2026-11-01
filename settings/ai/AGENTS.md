@@ -12,13 +12,18 @@
 
 ## Сеть
 - Интернет только через прокси с allowlist: доступны GitHub (только https, не ssh), реестры npm, PyPI, Go,
-  Maven Central, Gradle, Kubernetes/Helm, Anthropic и Kimi/Moonshot (api.kimi.com, api.kimi.ai,
-  api.moonshot.cn, api.moonshot.ai, auth.kimi.com). Ответ 403 от прокси — домена нет в списке, обходить не пытаться.
+  Maven Central, Gradle, Kubernetes/Helm и API агентов: Anthropic, Kimi/Moonshot (api.kimi.com,
+  api.moonshot.ai), OpenAI (api.openai.com, chatgpt.com), Google (generativelanguage.googleapis.com),
+  Qwen/DashScope (dashscope.aliyuncs.com). Ответ 403 от прокси — домена нет в списке, обходить не пытаться.
 
-## Kimi Code CLI
-- Конфиг, логин, сессии и история CLI — в `~/.kimi-code` (том `kimi`): переживают пересоздание контейнера.
-- Автообновление отключено в образе (`KIMI_CODE_NO_AUTO_UPDATE=1`): версия фиксируется образом и меняется
-  только пересборкой. `kimi upgrade` не запускать.
+## CLI агентов
+- Конфиги, логины и сессии агентов — в named volume: `claude` → `~/.claude`, `kimi` → `~/.kimi-code`,
+  `codex` → `~/.codex`, `gemini` → `~/.gemini`, `qwen` → `~/.qwen`, `opencode` → `~/.local/share/opencode`
+  (конфиг opencode — `~/.config/opencode`, в томе agent-home). Переживают пересоздание контейнера.
+- Логин — интерактивно в tmux (у `claude` и `kimi` — `/login`, у остальных — свои команды входа).
+- Автообновление отключено в образе или невозможно: версии фиксируются образом и меняются пересборкой.
+  Команды обновления CLI (`claude update`, `kimi upgrade`, `opencode upgrade`, `npm update -g` и т. п.)
+  не запускать.
 
 ## Дашборды Grafana
 

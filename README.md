@@ -18,8 +18,8 @@
 │ │ (занят)                 │ │ machine/compose          │ │              │ │    └─ tmux new -d -s orca                              │ │
 │ └─────────────────────────┘ │ — администратор          │ │              │ │ tmux «orca»: orca-ide serve :6769                      │ │
 │                             └──────────────────────────┘ │              │ │   └─ orcad-server → терминалы и агенты                 │ │
-│                                                          │              │ │ tmux «main»: bash · claude · kimi · java ·             │ │
-│                                                          │              │ │   mvn · gradle · go · python · psql                    │ │
+│                                                          │              │ │ tmux «main»: bash · claude · kimi · codex ·           │ │
+│                                                          │              │ │   gemini · qwen · opencode · java · mvn · gradle · go  │ │
 │ ┌── порты на 127.0.0.1 (compose → контейнеры) ─────────┐ │              │ │ /repos · ~/.claude · ~/.kimi-code · ~/.config/orca     │ │
 │ │ 6769 → agent: orca-ide serve                         │ │              │ │   ~/.orca · ~/.local/state/bash …                      │ │
 │ │ 5432 → postgres: PostgreSQL 18                       │ │              │ │ ◄─ named volumes на диске VM (кэши — отдельные тома)   │ │
@@ -45,9 +45,21 @@ Orca на хосте подключается к `orca-ide serve` в конте�
 со списком доменов (FAQ.md, п. 8).
 
 Данные контейнеров — в named volume на диске VM (с Windows не видны, удаляются вместе с машиной):
-`repos`, `orca-worktrees`, `claude`, `kimi`, `orca-config`, `orca-home`, `bash-history`, `postgres`,
-`victoria-metrics`, `victoria-logs`, `victoria-traces`, `grafana`; кэши — `agent-home`, `orcad-artifacts`.
+`repos`, `orca-worktrees`, `claude`, `kimi`, `codex`, `gemini`, `qwen`, `orca-config`, `orca-home`,
+`bash-history`, `postgres`, `victoria-metrics`, `victoria-logs`, `victoria-traces`, `grafana`;
+кэши — `agent-home`, `orcad-artifacts`.
 Копии томов: сервис `backup` и ручной export — FAQ.md «Резервная копия томов».
+
+Агентские CLI в контейнере (логин — интерактивно в tmux, конфиги — в named volume):
+
+| CLI | Провайдер | Конфиг (том) | Аутентификация |
+|---|---|---|---|
+| `claude` | Anthropic | `~/.claude` (`claude`) | подписка Pro/Max или API-ключ |
+| `kimi` | Moonshot AI | `~/.kimi-code` (`kimi`) | OAuth или API-ключ Kimi Platform |
+| `codex` | OpenAI | `~/.codex` (`codex`) | ChatGPT-аккаунт или `OPENAI_API_KEY` |
+| `gemini` | Google | `~/.gemini` (`gemini`) | Google-аккаунт или `GEMINI_API_KEY` |
+| `qwen` | Alibaba | `~/.qwen` (`qwen`) | Qwen-аккаунт или `DASHSCOPE_API_KEY` |
+| `opencode` | любой (провайдеры на выбор) | `~/.local/share/opencode` (`opencode`) | `opencode auth` или API-ключи провайдеров |
 
 ## Структура репозитория
 
@@ -61,7 +73,8 @@ settings/                           только статические наст
 ├── apt/debian.sources              источники apt (только https), встраивается в образ common
 ├── ai/AGENTS.md, CLAUDE.md         инструкции агентам: единый AGENTS.md (CLAUDE.md ссылается на него),
                                     монтируются в ~/.claude и ~/.kimi-code только для чтения
-├── managed-settings.json           управляемые настройки Claude Code (хуки dcg и Langfuse, без телеметрии), встраивается в образ
+├── managed-settings.json           управляемые настройки Claude Code (хуки dcg и Langfuse, без телеметрии) — монтируется в /etc/claude-code только для чтения
+├── opencode/opencode.json          управляемые настройки opencode (autoupdate выключен) — монтируется в /etc/opencode только для чтения
 ├── egress/envoy.yaml               конфиг egress (Envoy) с allowlist доменов — монтируется в egress (FAQ.md, п. 8)
 ├── backup/backup.sh                скрипт сервиса backup: копии томов раз в час (FAQ.md «Резервная копия томов»)
 └── monitoring/                     otel-collector, otel-agent, vmauth; Grafana: источники, плагины, дашборды (FAQ.md, п. 10)

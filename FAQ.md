@@ -29,8 +29,8 @@ podman compose -f A:\orca\docker\compose-win.yaml --profile backup up -d
 
 - раз в час (`BACKUP_INTERVAL` в `.env`, секунды) снимает дамп PostgreSQL (`pg_dumpall`) и отпечаток всех файлов
   томов (путь, размер, время изменения, права); если с прошлой копии ничего не изменилось — пропускает;
-- иначе пишет `data\backup\<дата-время>\`: `<том>.tar` для `repos`, `orca-worktrees`, `claude`, `kimi`, `orca-config`,
-  `orca-home`, `bash-history`, `grafana` и `postgres.sql`; готовая копия помечается файлом `COMPLETE`;
+- иначе пишет `data\backup\<дата-время>\`: `<том>.tar` для `repos`, `orca-worktrees`, `claude`, `kimi`, `codex`, `gemini`,
+  `qwen`, `opencode`, `orca-config`, `orca-home`, `bash-history`, `grafana` и `postgres.sql`; готовая копия помечается файлом `COMPLETE`;
 - хранит 2 последние копии (`BACKUP_KEEP`), старые и незавершённые удаляет;
 - кэши (`agent-home`, `orcad-artifacts`) и Victoria* (временные ряды со сроком хранения) не копирует.
 
@@ -64,6 +64,10 @@ podman volume export agent-box_repos            -o A:\orca\docker\data\backup\ma
 podman volume export agent-box_orca-worktrees   -o A:\orca\docker\data\backup\manual\orca-worktrees.tar
 podman volume export agent-box_claude           -o A:\orca\docker\data\backup\manual\claude.tar
 podman volume export agent-box_kimi             -o A:\orca\docker\data\backup\manual\kimi.tar
+podman volume export agent-box_codex            -o A:\orca\docker\data\backup\manual\codex.tar
+podman volume export agent-box_gemini           -o A:\orca\docker\data\backup\manual\gemini.tar
+podman volume export agent-box_qwen             -o A:\orca\docker\data\backup\manual\qwen.tar
+podman volume export agent-box_opencode         -o A:\orca\docker\data\backup\manual\opencode.tar
 podman volume export agent-box_orca-config      -o A:\orca\docker\data\backup\manual\orca-config.tar
 podman volume export agent-box_orca-home        -o A:\orca\docker\data\backup\manual\orca-home.tar
 podman volume export agent-box_bash-history     -o A:\orca\docker\data\backup\manual\bash-history.tar
@@ -254,6 +258,10 @@ subuid в VM, а не пользователь `core`, которому прин
 | `~/.claude/CLAUDE.md`, `~/.claude/AGENTS.md` | `settings/ai/CLAUDE.md`, `settings/ai/AGENTS.md` с Windows, только чтение | инструкции агентам (в git): единый AGENTS.md, CLAUDE.md ссылается на него |
 | `~/.kimi-code` | `kimi` | логин, сессии, история, config.toml Kimi Code CLI |
 | `~/.kimi-code/AGENTS.md` | `settings/ai/AGENTS.md` с Windows, только чтение | инструкции агентам Kimi (в git) |
+| `~/.codex` | `codex` | конфиг, авторизация, сессии Codex CLI |
+| `~/.gemini` | `gemini` | настройки, OAuth Gemini CLI |
+| `~/.qwen` | `qwen` | настройки, OAuth Qwen Code |
+| `~/.local/share/opencode` | `opencode` | авторизация и данные opencode |
 | `~/.config/orca`, `~/.orca` | `orca-config`, `orca-home` | сессии и рабочие пространства Orca, история терминалов, сопряжение, секреты orcad |
 | `~/.config/orca/orcad-artifacts` | `orcad-artifacts` | рантайм orcad (~150 МБ), скачивается с nodejs.org |
 | `~/.local/state/bash` | `bash-history` | история bash (`HISTFILE`) |
@@ -574,7 +582,7 @@ Linux (rootless podman без VM) и, с оговорками, macOS (podman mac
 
 | | `compose-win.yaml` | `compose-unix.yaml` |
 |---|---|---|
-| `repos`, worktree Orca, `~/.claude`, `~/.kimi-code`, Orca, история bash | named volume | `data/repos`, `data/orca-worktrees`, `data/claude`, `data/kimi`, `data/orca/{config,home}`, `data/bash` |
+| `repos`, worktree Orca, `~/.claude`, `~/.kimi-code`, `~/.codex`, `~/.gemini`, `~/.qwen`, opencode, Orca, история bash | named volume | `data/repos`, `data/orca-worktrees`, `data/claude`, `data/kimi`, `data/codex`, `data/gemini`, `data/qwen`, `data/opencode`, `data/orca/{config,home}`, `data/bash` |
 | PostgreSQL, Victoria*, Grafana | named volume | `data/postgres`, `data/monitoring/*` |
 | Пользователь | uid 1000 контейнера = subuid в VM | `userns_mode: keep-id:uid=1000,gid=1000`: ваш пользователь хоста = uid 1000 в контейнерах, файлы в `data/` — ваши |
 | Резервная копия | сервис `backup` (профиль, выключен) | не нужна отдельно: копировать `data/` обычными средствами, PostgreSQL — `pg_dumpall` |

@@ -40,6 +40,12 @@ RUN --mount=type=bind,from=orca,source=/opt/orca.deb,target=/tmp/orca.deb \
 COPY --from=node    /opt/node/       /usr/local/
 COPY --from=claude  /opt/bin/claude  /usr/local/bin/claude
 COPY --from=kimi    /opt/bin/kimi    /usr/local/bin/kimi
+COPY --from=codex   /opt/bin/codex   /usr/local/bin/codex
+COPY --from=gemini  /opt/gemini/bin/  /usr/local/bin/
+COPY --from=gemini  /opt/gemini/lib/  /usr/local/lib/
+COPY --from=qwen    /opt/qwen/bin/    /usr/local/bin/
+COPY --from=qwen    /opt/qwen/lib/    /usr/local/lib/
+COPY --from=opencode /opt/bin/opencode /usr/local/bin/opencode
 COPY --from=dcg     /opt/bin/dcg     /usr/local/bin/dcg
 COPY --from=uv      /opt/bin/        /usr/local/bin/
 COPY --from=ruff    /opt/bin/ruff    /usr/local/bin/ruff
@@ -64,8 +70,9 @@ RUN python3 -m venv /opt/langfuse-hook \
  && /opt/langfuse-hook/bin/pip install --no-cache-dir "langfuse==${LANGFUSE_VERSION}"
 COPY scripts/build/langfuse_hook.py /usr/local/lib/agent-box/langfuse_hook.py
 
-# Управляемые настройки Claude Code: хуки dcg и Langfuse нельзя отключить из ~/.claude
-COPY settings/managed-settings.json /etc/claude-code/managed-settings.json
+# Управляемые настройки Claude Code (settings/managed-settings.json: хуки dcg и Langfuse) и opencode
+# (settings/opencode/opencode.json: autoupdate выключен) в образ не встраиваются: compose монтирует
+# файлы в /etc/claude-code и /etc/opencode только для чтения
 
 # Точка входа: tmux-сессия orca с `orca-ide serve` (отключается ORCA_SERVE=0)
 COPY --chmod=755 scripts/build/entrypoint.sh /usr/local/bin/agent-entrypoint
@@ -115,6 +122,10 @@ ENV DISABLE_AUTOUPDATER=1
 ENV KIMI_CODE_NO_AUTO_UPDATE=1 \
     KIMI_DISABLE_TELEMETRY=1
 
+# Gemini CLI / Qwen Code: телеметрия выключена (версии фиксируются образом)
+ENV GEMINI_TELEMETRY_ENABLED=false \
+    QWEN_TELEMETRY_ENABLED=false
+
 ENV PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/go/bin:/usr/local/go/bin:/usr/lib/jvm/temurin-25/bin:/opt/maven/bin:/opt/gradle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Login-shell (tmux, bash -l) берёт PATH из /etc/profile — вернуть PATH образа
@@ -124,6 +135,7 @@ RUN echo "export PATH=\"$PATH\"" > /etc/profile.d/00-agent-box-path.sh
 # Временный HOME, чтобы проверки не оставили файлов в /home/agent
 RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
  && node --version && npm --version && claude --version && dcg --version && kimi --version \
+ && codex --version && gemini --version && qwen --version && opencode --version \
  && python3 --version && pip3 --version && uv --version && ruff --version && pytest --version \
  && git --version && gcc --version | sed -n 1p \
  && java -version && mvn --version && gradle --version --no-daemon \
@@ -136,7 +148,9 @@ RUN export HOME=/tmp/check GRADLE_USER_HOME=/tmp/check/.gradle \
 RUN groupadd --gid "${USER_GID}" agent \
  && useradd --uid "${USER_UID}" --gid agent --create-home --shell /bin/bash agent \
  && mkdir -p /repos \
-      /home/agent/.claude /home/agent/.kimi-code /home/agent/.config/orca/orcad-artifacts /home/agent/.orca \
+      /home/agent/.claude /home/agent/.kimi-code /home/agent/.codex /home/agent/.gemini /home/agent/.qwen \
+      /home/agent/.config/opencode /home/agent/.local/share/opencode \
+      /home/agent/.config/orca/orcad-artifacts /home/agent/.orca \
       /home/agent/.local/state/bash /home/agent/orca/workspaces \
  && chown agent:agent /repos \
  && chown -R agent:agent /home/agent
